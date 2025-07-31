@@ -10,6 +10,7 @@ import time
 import os
 import shutil
 from datetime import datetime
+from pytz import timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,6 +29,9 @@ LOG_DIR = "check_logs" # Thư mục chính lưu log
 # --- GIỚI HẠN MẶC ĐỊNH CHO THÀNH VIÊN ---
 DEFAULT_MEMBER_LIMIT = 100
 MEMBER_THREAD_LIMIT = 3
+
+# --- CẤU HÌNH MÚI GIỜ ---
+VIETNAM_TZ = timezone('Asia/Ho_Chi_Minh')
 
 # --- BIẾN TOÀN CỤC ĐỂ THEO DÕI TÁC VỤ ĐANG CHẠY ---
 ACTIVE_CHECKS = set()
@@ -95,7 +99,7 @@ def update_user_stats(user_id, user_info, counts):
     stats[user_id_str]['total_decline'] += counts.get('decline', 0)
     stats[user_id_str]['total_error'] += counts.get('error', 0)
     stats[user_id_str]['total_invalid'] += counts.get('invalid_format', 0)
-    stats[user_id_str]['last_check_timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    stats[user_id_str]['last_check_timestamp'] = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
     
     save_json_file(STATS_FILE, stats)
 
@@ -208,7 +212,22 @@ def create_progress_bar(current, total, length=10):
 
 # --- CÁC LỆNH BOT ---
 async def start(update, context):
-    await update.message.reply_text(f"**Chào mừng!**\nID của bạn: `{update.effective_user.id}`\nDùng /help để xem lệnh.")
+    user = update.effective_user
+    if user.id in load_users() or user.id == ADMIN_ID:
+        await update.message.reply_text(f"**Chào mừng trở lại, {user.first_name}!**\nDùng /help để xem các lệnh bạn có thể sử dụng.")
+    else:
+        welcome_message = (
+            "**Welcome to the Premium Card Checker Bot!** 🤖\n\n"
+            "This bot utilizes a powerful `Charge 0.5$ Api Auth` to provide accurate card checking services.\n\n"
+            "**Your current status:** `GUEST`\n"
+            "Your Telegram ID: `{user_id}`\n\n"
+            "**🌟 Upgrade to Premium! 🌟**\n"
+            "Unlock the full potential of the bot with a Premium membership:\n"
+            "✅ **Unlimited Checking:** No restrictions on the number of cards you can check.\n"
+            "✅ **Priority Support:** Get faster assistance from the admin.\n\n"
+            "To get access and upgrade to Premium, please contact the admin with your ID: {admin_username}"
+        ).format(user_id=user.id, admin_username=ADMIN_USERNAME)
+        await update.message.reply_text(welcome_message)
 
 async def info(update, context):
     await update.message.reply_text(f"🆔 ID Telegram của bạn là: `{update.effective_user.id}`")
@@ -230,9 +249,10 @@ async def help_command(update, context):
         "🔹 `/help`\n"
         "   - *Mô tả:* Hiển thị bảng trợ giúp này.\n"
         "   - *Sử dụng:* `/help`\n\n"
-        f"*Để sử dụng các tính năng chính, vui lòng liên hệ Admin: {ADMIN_USERNAME}*"
+        f"**Nâng cấp Premium:**\nĐể sử dụng các tính năng check không giới hạn (`Charge 0.5$ Api Auth`), vui lòng liên hệ Admin: {ADMIN_USERNAME}"
     )
     
+    user_limit = get_user_limit(user_id)
     member_commands = (
         "**Bảng Lệnh Thành Viên** 👤\n"
         "Bạn đã được cấp quyền! Sử dụng các lệnh sau để check thẻ:\n\n"
@@ -244,7 +264,9 @@ async def help_command(update, context):
         "   - *Mô tả:* Kiểm tra hàng loạt thẻ từ một tệp `.txt`.\n"
         "   - *Cách dùng:* Gửi tệp `.txt` và điền caption là `/mass` theo số luồng mong muốn.\n"
         "   - *Ví dụ:* Gửi file và ghi caption là `/mass3` để chạy 3 luồng.\n"
-        "   - *Mặc định:* `/mass` (nếu không ghi số luồng).\n"
+        "   - *Mặc định:* `/mass` (nếu không ghi số luồng).\n\n"
+        f"💳 **Hạn mức của bạn:** `{user_limit}` lines/file (Free).\n"
+        f"🌟 **Nâng cấp Premium:** Liên hệ {ADMIN_USERNAME} để check không giới hạn."
     )
 
     admin_commands = (
@@ -274,7 +296,7 @@ async def help_command(update, context):
     )
 
     if user_id == ADMIN_ID:
-        help_text = f"{admin_commands}\n\n{member_commands}\n\n{public_commands.split('**Bảng Lệnh Công Khai** 🛠️')[1]}"
+        help_text = f"{admin_commands}\n\n{member_commands.split('💳 **Hạn mức của bạn:**')[0].strip()}"
     elif user_id in load_users():
         help_text = f"{member_commands}\n\n{public_commands}"
     else:
@@ -379,7 +401,7 @@ async def cs_command(update, context):
                          f"**💬 Response:** `{response_message}`\n\n"
                          f"**🏦 Gateway:** `Charge 0.5$ Auth Api`\n\n"
                          f"**ℹ️ BIN Info:**\n{bin_str}\n\n"
-                         f"👤 *Checker by: @startsuttdow*")
+                         f"� *Checker by: @startsuttdow*")
         await msg.edit_text(final_message)
     except Exception as e:
         logger.error(f"Lỗi trong /cs: {e}", exc_info=True)
@@ -443,7 +465,7 @@ async def mass_check_handler(update, context):
     else:
         num_threads = max(1, min(50, requested_threads))
 
-    session_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    session_timestamp = datetime.now(VIETNAM_TZ).strftime("%Y%m%d-%H%M%S")
     session_dir = os.path.join(LOG_DIR, str(user.id), session_timestamp)
     os.makedirs(session_dir, exist_ok=True)
     
@@ -633,8 +655,11 @@ async def button_handler(update, context):
             if os.path.exists(summary_path):
                 summary = load_json_file(summary_path)
                 counts = summary.get('counts', {})
-                try: dt_obj = datetime.strptime(session_ts, "%Y%m%d-%H%M%S"); readable_ts = dt_obj.strftime("%d/%m/%Y %H:%M")
-                except ValueError: readable_ts = session_ts
+                try: 
+                    dt_obj = datetime.strptime(session_ts, "%Y%m%d-%H%M%S")
+                    readable_ts = dt_obj.strftime("%d/%m/%Y %H:%M")
+                except ValueError: 
+                    readable_ts = session_ts
                 button_text = f"🕒 {readable_ts} - ✅{counts.get('success',0)} ❌{counts.get('decline',0)}"
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=f"loot_session_{target_user_id}_{session_ts}")])
         
