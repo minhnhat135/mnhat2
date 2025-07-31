@@ -470,7 +470,7 @@ async def cs_command(update, context):
                          f"**💬 Response:** `{response_message}`\n\n"
                          f"**🏦 Gateway:** `Charge 0.5$ Auth Api`\n\n"
                          f"**ℹ️ BIN Info:**\n{bin_str}\n\n"
-                         f"� *Checker by: @startsuttdow*")
+                         f"👤 *Checker by: @startsuttdow*")
         await msg.edit_text(final_message)
     except Exception as e:
         logger.error(f"Lỗi trong /cs: {e}", exc_info=True)
@@ -626,15 +626,29 @@ async def show_check_command(update, context):
         await update.message.reply_text("Chưa có dữ liệu thống kê nào."); return
     
     message = "📊 **THỐNG KÊ CHECK CỦA USER** 📊\n\n"
-    for user_id, data in stats.items():
-        user_display = f"@{data.get('username')}" if data.get('username') else f"ID: {user_id}"
-        message += (f"👤 **{user_display}** (`{user_id}`)\n"
-                    f"  ✅ Charged: `{data.get('total_charged', 0)}`\n"
-                    f"  🔒 Custom: `{data.get('total_custom', 0)}`\n"
-                    f"  ❌ Declined: `{data.get('total_decline', 0)}`\n"
-                    f"  ❔ Lỗi: `{data.get('total_error', 0) + data.get('total_invalid', 0)}`\n"
-                    f"  🕒 Lần cuối: `{data.get('last_check_timestamp', 'N/A')}`\n"
-                    f"--------------------\n")
+    
+    # Lấy danh sách tất cả user được cấp quyền và cả admin
+    all_users_to_show = load_users()
+    all_users_to_show.add(ADMIN_ID)
+
+    for user_id in sorted(list(all_users_to_show)):
+        user_id_str = str(user_id)
+        data = stats.get(user_id_str) # Lấy data nếu có
+
+        if data:
+            user_display = f"@{data.get('username')}" if data.get('username') else f"ID: {user_id_str}"
+            message += (f"👤 **{user_display}** (`{user_id_str}`)\n"
+                        f"  ✅ Charged: `{data.get('total_charged', 0)}`\n"
+                        f"  🔒 Custom: `{data.get('total_custom', 0)}`\n"
+                        f"  ❌ Declined: `{data.get('total_decline', 0)}`\n"
+                        f"  ❔ Lỗi: `{data.get('total_error', 0) + data.get('total_invalid', 0)}`\n"
+                        f"  🕒 Lần cuối: `{data.get('last_check_timestamp', 'Chưa check')}`\n"
+                        f"--------------------\n")
+        else:
+            # User chưa từng check
+            message += (f"👤 **ID: {user_id_str}**\n"
+                        f"  *Chưa từng check.*\n"
+                        f"--------------------\n")
     
     await update.message.reply_text(message)
 
