@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # THÔNG TIN NHẠY CẢM ĐƯỢC GHI TRỰC TIẾP VÀO MÃ NGUỒN
 BOT_TOKEN = "8383293948:AAEDVbBV05dXWHNZXod3RRJjmwqc2N4xsjQ"
 ADMIN_ID = 5127429005
+ADMIN_USERNAME = "@startsuttdow" # Thêm username của admin
 
 # Tên file lưu danh sách user được phép
 USER_FILE = "authorized_users.txt"
@@ -88,12 +89,55 @@ async def start(update, context):
     welcome_text = (f"**Chào mừng bạn đến với Bot Checker!** 🤖\n\n"
                     f"🆔 ID Telegram của bạn là: `{user_id}`\n\n"
                     f"Để sử dụng chức năng check thẻ, bạn cần được Admin cấp quyền. Hãy gửi ID này cho Admin.\n\n"
-                    f"Sử dụng lệnh `/info` để xem lại ID của bạn bất cứ lúc nào.")
+                    f"Sử dụng lệnh `/help` để xem các lệnh có thể dùng.")
     await update.message.reply_text(welcome_text)
 
 async def info(update, context):
     user_id = update.effective_user.id
     await update.message.reply_text(f"🆔 ID Telegram của bạn là: `{user_id}`\n\n(Hãy nhấn vào ID để sao chép)")
+
+# --- LỆNH /help MỚI ---
+async def help_command(update, context):
+    user_id = update.effective_user.id
+    
+    # Tin nhắn cho Admin
+    if user_id == ADMIN_ID:
+        help_text = (
+            "👑 **Trợ giúp dành cho Admin** 👑\n\n"
+            "**Lệnh Quản lý:**\n"
+            "- `/add <user_id>`: Thêm người dùng.\n"
+            "- `/ban <user_id>`: Xóa người dùng.\n"
+            "- `/show`: Hiển thị danh sách người dùng.\n\n"
+            "**Lệnh Thành viên:**\n"
+            "- `/massN <file>`: Bắt đầu check thẻ với N luồng.\n\n"
+            "**Lệnh Công khai:**\n"
+            "- `/start`: Khởi động bot.\n"
+            "- `/info`: Lấy ID Telegram của bạn.\n"
+            "- `/help`: Xem tin nhắn này."
+        )
+    # Tin nhắn cho thành viên được cấp phép
+    elif user_id in load_users():
+        help_text = (
+            "👤 **Trợ giúp dành cho Thành viên** 👤\n\n"
+            "Bạn đã được cấp quyền sử dụng các lệnh sau:\n\n"
+            "**Lệnh Chính:**\n"
+            "- `/massN <file>`: Gửi tệp .txt kèm chú thích này để bắt đầu check thẻ với N luồng (ví dụ: `/mass10`).\n\n"
+            "**Lệnh Cơ bản:**\n"
+            "- `/start`: Khởi động bot.\n"
+            "- `/info`: Lấy ID Telegram của bạn.\n"
+            "- `/help`: Xem tin nhắn này."
+        )
+    # Tin nhắn cho người dùng công khai
+    else:
+        help_text = (
+            "👋 **Trợ giúp** 👋\n\n"
+            "Các lệnh bạn có thể sử dụng:\n"
+            "- `/start`: Khởi động bot và xem ID.\n"
+            "- `/info`: Lấy lại ID Telegram của bạn.\n"
+            "- `/help`: Xem tin nhắn này.\n\n"
+            f"Để sử dụng các tính năng chính, vui lòng liên hệ Admin: {ADMIN_USERNAME}"
+        )
+    await update.message.reply_text(help_text)
 
 # --- CÁC LỆNH ADMIN ---
 async def add_user(update, context):
@@ -198,8 +242,11 @@ def main():
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
     # Đăng ký các lệnh
-    application.add_handler(CommandHandler("start", start)); application.add_handler(CommandHandler("info", info))
-    application.add_handler(CommandHandler("add", add_user)); application.add_handler(CommandHandler("ban", ban_user))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("info", info))
+    application.add_handler(CommandHandler("help", help_command)) # Thêm lệnh help
+    application.add_handler(CommandHandler("add", add_user))
+    application.add_handler(CommandHandler("ban", ban_user))
     application.add_handler(CommandHandler("show", show_users))
     
     # Handler chính cho việc check thẻ
