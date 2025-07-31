@@ -585,12 +585,25 @@ async def mass_check_handler(update, context):
                     except telegram.error.BadRequest: pass
                     last_update_time = time.time()
         
+        # Construct the final summary message
+        final_summary_text = (
+            f"**📊 Check Complete!**\n\n"
+            f"**Total:** `{total_lines}` | **Threads:** `{num_threads}`\n\n"
+            f"✅ **Charged:** `{counts['success']}`\n"
+            f"❌ **Declined:** `{counts['decline']}`\n"
+            f"🔒 **3D Secure:** `{counts['custom']}`\n"
+            f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
+            f"❔ **Errors:** `{counts['error']}`"
+        )
+        
+        # Edit the status message to show the final summary
+        await status_message.edit_text(final_summary_text)
+
+        # Save summary data and update stats
         summary_data = {'counts': counts, 'original_filename': document.file_name}
         save_json_file(os.path.join(session_dir, "summary.json"), summary_data)
         
         update_user_stats(user.id, user, counts)
-
-        await status_message.edit_text("📊 **Complete!** Sending results...")
 
         file_map = {
             'success': 'charged.txt', 'decline': 'declined.txt',
