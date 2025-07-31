@@ -24,6 +24,7 @@ ADMIN_USERNAME = "@startsuttdow"
 USER_FILE = "authorized_users.txt"
 LIMIT_FILE = "user_limits.json"
 STATS_FILE = "user_stats.json"
+PREFS_FILE = "user_prefs.json" # File lưu ngôn ngữ
 LOG_DIR = "check_logs" # Thư mục chính lưu log
 
 # --- GIỚI HẠN MẶC ĐỊNH CHO THÀNH VIÊN ---
@@ -76,6 +77,15 @@ def save_users(user_set):
 def get_user_limit(user_id):
     limits = load_json_file(LIMIT_FILE)
     return limits.get(str(user_id), DEFAULT_MEMBER_LIMIT)
+
+def get_user_lang(user_id):
+    prefs = load_json_file(PREFS_FILE)
+    return prefs.get(str(user_id), None) # Trả về None nếu chưa set
+
+def set_user_lang(user_id, lang_code):
+    prefs = load_json_file(PREFS_FILE)
+    prefs[str(user_id)] = lang_code
+    save_json_file(PREFS_FILE, prefs)
 
 def update_user_stats(user_id, user_info, counts):
     """Cập nhật file thống kê chung cho các user."""
@@ -213,9 +223,15 @@ def create_progress_bar(current, total, length=10):
 # --- CÁC LỆNH BOT ---
 async def start(update, context):
     user = update.effective_user
+    lang = get_user_lang(user.id) or 'en' # Mặc định là tiếng Anh nếu chưa chọn
+
     if user.id in load_users() or user.id == ADMIN_ID:
-        await update.message.reply_text(f"**Chào mừng trở lại, {user.first_name}!**\nDùng /help để xem các lệnh bạn có thể sử dụng.")
+        if lang == 'vi':
+            await update.message.reply_text(f"**Chào mừng trở lại, {user.first_name}!**\nDùng /help để xem các lệnh bạn có thể sử dụng.")
+        else:
+            await update.message.reply_text(f"**Welcome back, {user.first_name}!**\nUse /help to see the available commands.")
     else:
+        # Người dùng mới luôn thấy thông báo tiếng Anh
         welcome_message = (
             "**Welcome to the Premium Card Checker Bot!** 🤖\n\n"
             "This bot utilizes a powerful `Charge 0.5$ Api Auth` to provide accurate card checking services.\n\n"
@@ -232,43 +248,76 @@ async def start(update, context):
 async def info(update, context):
     await update.message.reply_text(f"🆔 ID Telegram của bạn là: `{update.effective_user.id}`")
 
-async def help_command(update, context):
-    user_id = update.effective_user.id
+async def get_help_text(user_id, lang_code):
+    """Tạo nội dung help dựa trên vai trò và ngôn ngữ của user."""
+    user_limit = get_user_limit(user_id)
     
     # --- Mẫu tin nhắn trợ giúp ---
+    text_vi = {
+        "public": (
+            "**Bảng Lệnh Công Khai** 🛠️\n"
+            "Chào mừng bạn! Dưới đây là các lệnh cơ bản bạn có thể sử dụng:\n\n"
+            "🔹 `/start`\n"
+            "   - *Mô tả:* Khởi động bot và nhận ID Telegram của bạn.\n"
+            "   - *Sử dụng:* `/start`\n\n"
+            "🔹 `/info`\n"
+            "   - *Mô tả:* Lấy lại ID Telegram của bạn một cách nhanh chóng.\n"
+            "   - *Sử dụng:* `/info`\n\n"
+            "🔹 `/help`\n"
+            "   - *Mô tả:* Hiển thị bảng trợ giúp này.\n"
+            "   - *Sử dụng:* `/help`\n\n"
+            f"**Nâng cấp Premium:**\nĐể sử dụng các tính năng check không giới hạn (`Charge 0.5$ Api Auth`), vui lòng liên hệ Admin: {ADMIN_USERNAME}"
+        ),
+        "member": (
+            "**Bảng Lệnh Thành Viên** 👤\n"
+            "Bạn đã được cấp quyền! Sử dụng các lệnh sau để check thẻ:\n\n"
+            "🔹 `/cs <thẻ>`\n"
+            "   - *Mô tả:* Kiểm tra một thẻ tín dụng duy nhất.\n"
+            "   - *Định dạng thẻ:* `Số thẻ|Tháng|Năm|CVV`\n"
+            "   - *Ví dụ:* `/cs 4031630741125602|11|2028|123`\n\n"
+            "🔹 `/mass<số luồng> <file.txt>`\n"
+            "   - *Mô tả:* Kiểm tra hàng loạt thẻ từ một tệp `.txt`.\n"
+            "   - *Cách dùng:* Gửi tệp `.txt` và điền caption là `/mass` theo số luồng mong muốn.\n"
+            "   - *Ví dụ:* Gửi file và ghi caption là `/mass3` để chạy 3 luồng.\n"
+            "   - *Mặc định:* `/mass` (nếu không ghi số luồng).\n\n"
+            f"💳 **Hạn mức của bạn:** `{user_limit}` lines/file (Free).\n"
+            f"🌟 **Nâng cấp Premium:** Liên hệ {ADMIN_USERNAME} để check không giới hạn."
+        )
+    }
     
-    public_commands = (
-        "**Bảng Lệnh Công Khai** 🛠️\n"
-        "Chào mừng bạn! Dưới đây là các lệnh cơ bản bạn có thể sử dụng:\n\n"
-        "🔹 `/start`\n"
-        "   - *Mô tả:* Khởi động bot và nhận ID Telegram của bạn.\n"
-        "   - *Sử dụng:* `/start`\n\n"
-        "🔹 `/info`\n"
-        "   - *Mô tả:* Lấy lại ID Telegram của bạn một cách nhanh chóng.\n"
-        "   - *Sử dụng:* `/info`\n\n"
-        "🔹 `/help`\n"
-        "   - *Mô tả:* Hiển thị bảng trợ giúp này.\n"
-        "   - *Sử dụng:* `/help`\n\n"
-        f"**Nâng cấp Premium:**\nĐể sử dụng các tính năng check không giới hạn (`Charge 0.5$ Api Auth`), vui lòng liên hệ Admin: {ADMIN_USERNAME}"
-    )
-    
-    user_limit = get_user_limit(user_id)
-    member_commands = (
-        "**Bảng Lệnh Thành Viên** 👤\n"
-        "Bạn đã được cấp quyền! Sử dụng các lệnh sau để check thẻ:\n\n"
-        "🔹 `/cs <thẻ>`\n"
-        "   - *Mô tả:* Kiểm tra một thẻ tín dụng duy nhất.\n"
-        "   - *Định dạng thẻ:* `Số thẻ|Tháng|Năm|CVV`\n"
-        "   - *Ví dụ:* `/cs 4031630741125602|11|2028|123`\n\n"
-        "🔹 `/mass<số luồng> <file.txt>`\n"
-        "   - *Mô tả:* Kiểm tra hàng loạt thẻ từ một tệp `.txt`.\n"
-        "   - *Cách dùng:* Gửi tệp `.txt` và điền caption là `/mass` theo số luồng mong muốn.\n"
-        "   - *Ví dụ:* Gửi file và ghi caption là `/mass3` để chạy 3 luồng.\n"
-        "   - *Mặc định:* `/mass` (nếu không ghi số luồng).\n\n"
-        f"💳 **Hạn mức của bạn:** `{user_limit}` lines/file (Free).\n"
-        f"🌟 **Nâng cấp Premium:** Liên hệ {ADMIN_USERNAME} để check không giới hạn."
-    )
+    text_en = {
+        "public": (
+            "**Public Command Menu** 🛠️\n"
+            "Welcome! Here are the basic commands you can use:\n\n"
+            "🔹 `/start`\n"
+            "   - *Description:* Starts the bot and gets your Telegram ID.\n"
+            "   - *Usage:* `/start`\n\n"
+            "🔹 `/info`\n"
+            "   - *Description:* Quickly retrieves your Telegram ID again.\n"
+            "   - *Usage:* `/info`\n\n"
+            "🔹 `/help`\n"
+            "   - *Description:* Displays this help menu.\n"
+            "   - *Usage:* `/help`\n\n"
+            f"**Upgrade to Premium:**\nTo use unlimited checking features (`Charge 0.5$ Api Auth`), please contact the Admin: {ADMIN_USERNAME}"
+        ),
+        "member": (
+            "**Member Command Menu** 👤\n"
+            "You are authorized! Use these commands to check cards:\n\n"
+            "🔹 `/cs <card>`\n"
+            "   - *Description:* Checks a single credit card.\n"
+            "   - *Card Format:* `CardNumber|Month|Year|CVV`\n"
+            "   - *Example:* `/cs 4031630741125602|11|2028|123`\n\n"
+            "🔹 `/mass<threads> <file.txt>`\n"
+            "   - *Description:* Checks a list of cards from a `.txt` file.\n"
+            "   - *How to use:* Send a `.txt` file with this command as the caption.\n"
+            "   - *Example:* Send a file with the caption `/mass3` to run with 3 threads.\n"
+            "   - *Default:* `/mass` (if no thread count is specified).\n\n"
+            f"💳 **Your Limit:** `{user_limit}` lines/file (Free).\n"
+            f"🌟 **Upgrade to Premium:** Contact {ADMIN_USERNAME} for unlimited checking."
+        )
+    }
 
+    # Lệnh admin luôn là tiếng Việt
     admin_commands = (
         "**Bảng Lệnh Quản Trị Viên** 👑\n"
         "Toàn quyền quản lý bot với các lệnh sau:\n\n"
@@ -295,14 +344,34 @@ async def help_command(update, context):
         "   - *Ví dụ:* `/lootfile 123456789`\n"
     )
 
+    lang_texts = text_vi if lang_code == 'vi' else text_en
+    
     if user_id == ADMIN_ID:
-        help_text = f"{admin_commands}\n\n{member_commands.split('💳 **Hạn mức của bạn:**')[0].strip()}"
+        return f"{admin_commands}\n\n{text_vi['member'].split('💳 **Hạn mức của bạn:**')[0].strip()}"
     elif user_id in load_users():
-        help_text = f"{member_commands}\n\n{public_commands}"
+        return f"{lang_texts['member']}\n\n{lang_texts['public']}"
     else:
-        help_text = public_commands
-        
-    await update.message.reply_text(help_text, disable_web_page_preview=True)
+        return lang_texts['public']
+
+async def help_command(update, context):
+    user = update.effective_user
+    lang = get_user_lang(user.id)
+
+    if not lang:
+        keyboard = [
+            [
+                InlineKeyboardButton("🇻🇳 Tiếng Việt", callback_data="setlang_vi"),
+                InlineKeyboardButton("🇬🇧 English", callback_data="setlang_en"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Vui lòng chọn ngôn ngữ của bạn / Please select your language:",
+            reply_markup=reply_markup
+        )
+    else:
+        help_text = await get_help_text(user.id, lang)
+        await update.message.reply_text(help_text, disable_web_page_preview=True)
 
 async def add_user(update, context):
     if update.effective_user.id != ADMIN_ID: return
@@ -595,6 +664,18 @@ async def button_handler(update, context):
     data = query.data.split('_')
     command = data[0]
     action = data[1]
+    
+    # --- Xử lý nút chọn ngôn ngữ ---
+    if command == "setlang":
+        user_id = query.from_user.id
+        lang_code = action # 'vi' or 'en'
+        set_user_lang(user_id, lang_code)
+        
+        help_text = await get_help_text(user_id, lang_code)
+        await query.edit_message_text(help_text, disable_web_page_preview=True)
+        return
+
+    # --- Xử lý các nút /lootfile ---
     target_user_id = data[2] if len(data) > 2 else None
 
     # Main loot menu
