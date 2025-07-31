@@ -29,6 +29,9 @@ LOG_DIR = "check_logs" # Thư mục chính lưu log
 DEFAULT_MEMBER_LIMIT = 100
 MEMBER_THREAD_LIMIT = 3
 
+# --- BIẾN TOÀN CỤC ĐỂ THEO DÕI TÁC VỤ ĐANG CHẠY ---
+ACTIVE_CHECKS = set()
+
 # --- CẤU HÌNH LOGGING ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -255,7 +258,7 @@ async def help_command(update, context):
         "   - *Mô tả:* Xóa quyền truy cập và toàn bộ log của người dùng.\n"
         "   - *Ví dụ:* `/ban 123456789`\n\n"
         "🔹 `/show`\n"
-        "   - *Mô tả:* Hiển thị danh sách tất cả ID được phép.\n"
+        "   - *Mô tả:* Hiển thị danh sách tất cả ID được phép và hạn mức của họ.\n"
         "   - *Sử dụng:* `/show`\n\n"
         "**Quản lý Giới hạn:**\n"
         "🔹 `/addlimit <user_id> <số>`\n"
@@ -309,23 +312,37 @@ async def ban_user(update, context):
 async def show_users(update, context):
     if update.effective_user.id != ADMIN_ID: return
     users = load_users()
-    if not users: await update.message.reply_text("📭 Danh sách người dùng trống."); return
-    message = "👥 **Danh sách ID được phép:**\n\n" + "\n".join(f"- `{uid}`" for uid in users)
-    await update.message.reply_text(message)
+    if not users:
+        await update.message.reply_text("📭 Danh sách người dùng trống."); return
+    
+    message_lines = ["👥 **Danh sách ID & Hạn mức:**\n"]
+    for user_id in sorted(list(users)):
+        limit = get_user_limit(user_id)
+        message_lines.append(f"- `{user_id}` | Hạn mức: `{limit}` lines")
+        
+    await update.message.reply_text("\n".join(message_lines))
 
 async def add_limit_command(update, context):
     if update.effective_user.id != ADMIN_ID: return
     if len(context.args) != 2:
         await update.message.reply_text("Cú pháp: `/addlimit <user_id> <số_dòng_thêm>`"); return
     try:
-        target_user_id_str, amount_to_add = context.args[0], int(context.args[1])
-        if not target_user_id_str.isdigit() or amount_to_add <= 0: raise ValueError()
+        target_user_id_str = context.args[0]
+        amount_to_add = int(context.args[1])
+        if not target_user_id_str.isdigit() or amount_to_add <= 0:
+             raise ValueError("Dữ liệu không hợp lệ.")
     except (ValueError, IndexError):
-        await update.message.reply_text("❌ Dữ liệu không hợp lệ."); return
+        await update.message.reply_text("❌ Dữ liệu không hợp lệ. Hãy chắc chắn ID và số lượng là số."); return
 
     limits = load_json_file(LIMIT_FILE)
-    old_limit = limits.get(target_user_id_str, DEFAULT_MEMBER_LIMIT)
+    
+    # Lấy limit hiện tại, đảm bảo nó là số nguyên
+    old_limit = int(limits.get(target_user_id_str, DEFAULT_MEMBER_LIMIT))
+    
+    # Thực hiện phép cộng
     new_limit = old_limit + amount_to_add
+    
+    # Cập nhật và lưu lại
     limits[target_user_id_str] = new_limit
     save_json_file(LIMIT_FILE, limits)
     
@@ -370,6 +387,20 @@ async def cs_command(update, context):
 
 async def mass_check_handler(update, context):
     user = update.effective_user
+    
+    # --- CƠ CHẾ CHỐNG SPAM ---
+    if user.id != ADMIN_ID:
+        if user.id in ACTIVE_CHECKS:
+            logger.warning(f"User {user.id} ({user.full_name}) tried to start a new check while one is already running.")
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    f"⚠️ **Cảnh báo Spam** ⚠️\n\n"
+                    f"Thành viên `{user.id}` ({user.full_name or 'N/A'}) đang cố gắng gửi file mới trong khi một tác vụ check khác của họ đang chạy."
+                )
+            )
+            return # Dừng xử lý file mới, không báo cho member
+
     if user.id != ADMIN_ID and user.id not in load_users(): return
     if not update.message.document: await update.message.reply_text("Please attach a .txt file."); return
     document = update.message.document
@@ -385,8 +416,13 @@ async def mass_check_handler(update, context):
     if user.id != ADMIN_ID:
         user_limit = get_user_limit(user.id)
         if total_lines > user_limit:
-            await update.message.reply_text(f"⛔️ **Limit Exceeded!**\n"
-                                            f"Your file has `{total_lines}` lines, but your limit is `{user_limit}`.")
+            # Sửa thông báo tại đây
+            await update.message.reply_text(
+                f"⛔️ **Vượt quá giới hạn Free!**\n\n"
+                f"Tệp của bạn có `{total_lines}` dòng, nhưng giới hạn cho mỗi lần check là `{user_limit}` dòng.\n\n"
+                f"💡 **Lưu ý:** Bot sẽ chỉ chạy nếu tệp của bạn có từ `{user_limit}` dòng trở xuống.\n\n"
+                f"Nếu muốn tăng hạn mức, vui lòng liên hệ admin {ADMIN_USERNAME}."
+            )
             return
 
     caption = update.message.caption or "/mass"
@@ -399,7 +435,7 @@ async def mass_check_handler(update, context):
     if user.id != ADMIN_ID:
         if requested_threads > MEMBER_THREAD_LIMIT:
             await update.message.reply_text(
-                f"⚠️ **Thread Limit!**\nMembers can use a maximum of {MEMBER_THREAD_LIMIT} threads. Adjusting automatically.",
+                f"⚠️ **Giới hạn luồng!**\nThành viên chỉ được sử dụng tối đa {MEMBER_THREAD_LIMIT} luồng. Đã tự động điều chỉnh.",
                 quote=True
             )
             num_threads = MEMBER_THREAD_LIMIT
@@ -414,6 +450,9 @@ async def mass_check_handler(update, context):
     status_message = await update.message.reply_text(f"⏳ Initializing... Checking `{total_lines}` cards with `{num_threads}` threads.")
     
     try:
+        if user.id != ADMIN_ID:
+            ACTIVE_CHECKS.add(user.id)
+
         counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0}
         result_lists = {k: [] for k in counts.keys()}
         result_lists['error_debug'] = []
@@ -483,6 +522,10 @@ async def mass_check_handler(update, context):
     except Exception as e:
         logger.error(f"Lỗi trong mass_check: {e}", exc_info=True)
         await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!** `{e}`")
+    finally:
+        # Đảm bảo user được xóa khỏi danh sách active sau khi check xong hoặc gặp lỗi
+        if user.id != ADMIN_ID:
+            ACTIVE_CHECKS.discard(user.id)
 
 # --- CÁC LỆNH ADMIN MỚI ---
 async def show_check_command(update, context):
