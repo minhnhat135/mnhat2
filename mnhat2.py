@@ -27,6 +27,7 @@ LOG_DIR = "check_logs" # Thư mục chính lưu log
 
 # Giới hạn mặc định cho member
 DEFAULT_MEMBER_LIMIT = 100
+MEMBER_THREAD_LIMIT = 3
 
 # --- Cấu hình logging ---
 logging.basicConfig(
@@ -391,10 +392,27 @@ async def mass_check_handler(update, context):
                                             f"Tệp của bạn có `{total_lines}` dòng, giới hạn của bạn là `{user_limit}`.")
             return
 
-    caption = update.message.caption or "/mass10"
-    num_threads = int((re.match(r'/mass(\d+)', caption) or {}).group(1) or 10)
-    num_threads = max(1, min(50, num_threads))
+    caption = update.message.caption or "/mass"
     
+    # Xác định số luồng yêu cầu
+    requested_threads_match = re.match(r'/mass(\d+)', caption)
+    requested_threads = int(requested_threads_match.group(1)) if requested_threads_match else 10 # Mặc định 10 cho admin nếu không ghi
+
+    num_threads = requested_threads
+
+    # Áp dụng giới hạn luồng cho thành viên
+    if user.id != ADMIN_ID:
+        if requested_threads > MEMBER_THREAD_LIMIT:
+            await update.message.reply_text(
+                f"⚠️ **Giới hạn luồng!**\nThành viên chỉ được sử dụng tối đa {MEMBER_THREAD_LIMIT} luồng. Đã tự động điều chỉnh.",
+                quote=True
+            )
+            num_threads = MEMBER_THREAD_LIMIT
+        # Đảm bảo thành viên chạy ít nhất 1 luồng
+        num_threads = max(1, num_threads)
+    else: # Admin không bị giới hạn (tối đa 50)
+        num_threads = max(1, min(50, requested_threads))
+
     session_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     session_dir = os.path.join(LOG_DIR, str(user.id), session_timestamp)
     os.makedirs(session_dir, exist_ok=True)
