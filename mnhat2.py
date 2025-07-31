@@ -211,18 +211,75 @@ async def info(update, context):
 
 async def help_command(update, context):
     user_id = update.effective_user.id
-    base_commands = "**Lệnh Công khai:**\n- `/start`, `/info`, `/help`"
-    member_commands = "**Lệnh Thành viên:**\n- `/cs <cc|mm|yy|cvv>`\n- `/massN <file>`"
-    admin_commands = ("**Lệnh Quản lý:**\n- `/add`, `/ban`, `/show`\n"
-                      "- `/addlimit <id> <số>`\n- `/showcheck`\n- `/lootfile <id>`")
+    
+    # --- Mẫu tin nhắn trợ giúp ---
+    
+    # Lệnh công khai
+    public_commands = (
+        "**Bảng Lệnh Công Khai** 🛠️\n"
+        "Chào mừng bạn! Dưới đây là các lệnh cơ bản bạn có thể sử dụng:\n\n"
+        "🔹 `/start`\n"
+        "   - *Mô tả:* Khởi động bot và nhận ID Telegram của bạn.\n"
+        "   - *Sử dụng:* `/start`\n\n"
+        "🔹 `/info`\n"
+        "   - *Mô tả:* Lấy lại ID Telegram của bạn một cách nhanh chóng.\n"
+        "   - *Sử dụng:* `/info`\n\n"
+        "🔹 `/help`\n"
+        "   - *Mô tả:* Hiển thị bảng trợ giúp này.\n"
+        "   - *Sử dụng:* `/help`\n\n"
+        f"*Để sử dụng các tính năng chính, vui lòng liên hệ Admin: {ADMIN_USERNAME}*"
+    )
+    
+    # Lệnh thành viên
+    member_commands = (
+        "**Bảng Lệnh Thành Viên** 👤\n"
+        "Bạn đã được cấp quyền! Sử dụng các lệnh sau để check thẻ:\n\n"
+        "🔹 `/cs <thẻ>`\n"
+        "   - *Mô tả:* Kiểm tra một thẻ tín dụng duy nhất.\n"
+        "   - *Định dạng thẻ:* `Số thẻ|Tháng|Năm|CVV`\n"
+        "   - *Ví dụ:* `/cs 4031630741125602|11|2028|123`\n\n"
+        "🔹 `/mass<số luồng> <file.txt>`\n"
+        "   - *Mô tả:* Kiểm tra hàng loạt thẻ từ một tệp `.txt`.\n"
+        "   - *Cách dùng:* Gửi tệp `.txt` và điền caption là `/mass` theo số luồng mong muốn.\n"
+        "   - *Ví dụ:* Gửi file và ghi caption là `/mass20` để chạy 20 luồng.\n"
+        "   - *Mặc định:* `/mass10` (nếu không ghi số luồng).\n"
+    )
+
+    # Lệnh Admin
+    admin_commands = (
+        "**Bảng Lệnh Quản Trị Viên** 👑\n"
+        "Toàn quyền quản lý bot với các lệnh sau:\n\n"
+        "**Quản lý User:**\n"
+        "🔹 `/add <user_id>`\n"
+        "   - *Mô tả:* Cho phép một người dùng sử dụng bot.\n"
+        "   - *Ví dụ:* `/add 123456789`\n\n"
+        "🔹 `/ban <user_id>`\n"
+        "   - *Mô tả:* Xóa quyền truy cập và toàn bộ log của người dùng.\n"
+        "   - *Ví dụ:* `/ban 123456789`\n\n"
+        "🔹 `/show`\n"
+        "   - *Mô tả:* Hiển thị danh sách tất cả ID được phép.\n"
+        "   - *Sử dụng:* `/show`\n\n"
+        "**Quản lý Giới hạn:**\n"
+        "🔹 `/addlimit <user_id> <số>`\n"
+        "   - *Mô tả:* Cộng thêm giới hạn số dòng check cho thành viên.\n"
+        "   - *Ví dụ:* `/addlimit 123456789 500` (thêm 500 dòng vào limit hiện tại)\n\n"
+        "**Giám sát & Lịch sử:**\n"
+        "🔹 `/showcheck`\n"
+        "   - *Mô tả:* Xem thống kê tổng quan về hoạt động check của tất cả user.\n"
+        "   - *Sử dụng:* `/showcheck`\n\n"
+        "🔹 `/lootfile <user_id>`\n"
+        "   - *Mô tả:* Xem lịch sử các lần check file và tải lại kết quả của một user.\n"
+        "   - *Ví dụ:* `/lootfile 123456789`\n"
+    )
 
     if user_id == ADMIN_ID:
-        help_text = f"👑 **Trợ giúp Admin** 👑\n\n{admin_commands}\n\n{member_commands}\n\n{base_commands}"
+        help_text = f"{admin_commands}\n\n{member_commands}\n\n{public_commands.split('**Bảng Lệnh Công Khai** 🛠️')[1]}"
     elif user_id in load_users():
-        help_text = f"👤 **Trợ giúp Thành viên** 👤\n\n{member_commands}\n\n{base_commands}"
+        help_text = f"{member_commands}\n\n{public_commands}"
     else:
-        help_text = f"👋 **Trợ giúp** 👋\n\n{base_commands}\n\nLiên hệ Admin: {ADMIN_USERNAME}"
-    await update.message.reply_text(help_text)
+        help_text = public_commands
+        
+    await update.message.reply_text(help_text, disable_web_page_preview=True)
 
 async def add_user(update, context):
     if update.effective_user.id != ADMIN_ID: return
@@ -307,7 +364,7 @@ async def cs_command(update, context):
                          f"**🚦 Trạng thái: {status_text}**\n"
                          f"**💬 Phản hồi:** `{response_message}`\n\n"
                          f"**ℹ️ BIN:** {bin_str}\n\n"
-                         f"👤 *Checked by: {user.mention_markdown()}*")
+                         f"👤 *Checker by: @startsuttdow*")
         await msg.edit_text(final_message)
     except Exception as e:
         logger.error(f"Lỗi /cs: {e}", exc_info=True)
@@ -521,7 +578,7 @@ async def button_handler(update, context):
         await query.message.delete() # Xóa tin nhắn cũ có các nút file
 
 def main():
-    defaults = Defaults(parse_mode=ParseMode.MARKDOWN)
+    defaults = Defaults(parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
     # Lệnh cơ bản và quản lý
