@@ -89,7 +89,7 @@ def check_card(line):
             transaction_id = token_data.get("transactionId")
             if not transaction_id:
                 error_message = token_data.get("error", {}).get("message", "Không rõ lỗi")
-                return 'error', line, f"Lỗi Tokenize: {error_message}", bin_info
+                return 'decline', line, f"Lỗi Tokenize: {error_message}", bin_info
         except json.JSONDecodeError: return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
         
         payment_url = "https://api.raisenow.io/payments"
@@ -110,7 +110,7 @@ def check_card(line):
     except Exception as e: return 'error', line, f"Lỗi không xác định: {e}", bin_info
 
 def create_progress_bar(current, total, length=10):
-    if total == 0: return "[                    ] 0%"
+    if total == 0: return "[                   ] 0%"
     fraction = current / total
     filled_len = int(length * fraction)
     bar = '█' * filled_len + '░' * (length - filled_len)
@@ -132,33 +132,27 @@ async def info(update, context):
 
 async def help_command(update, context):
     user_id = update.effective_user.id
+    base_commands = ("**Lệnh Công khai:**\n"
+                     "- `/start`: Khởi động bot.\n"
+                     "- `/info`: Lấy ID Telegram của bạn.\n"
+                     "- `/help`: Xem tin nhắn này.")
+
+    member_commands = ("**Lệnh Thành viên:**\n"
+                       "- `/cs <cc|mm|yy|cvv>`: Check 1 thẻ.\n"
+                       "- `/massN <file>`: Check thẻ với N luồng từ file.\n")
+
+    admin_commands = ("**Lệnh Quản lý:**\n"
+                      "- `/add <user_id>`: Thêm người dùng.\n"
+                      "- `/ban <user_id>`: Xóa người dùng.\n"
+                      "- `/show`: Hiển thị danh sách người dùng.\n")
+
     if user_id == ADMIN_ID:
-        help_text = ("👑 **Trợ giúp dành cho Admin** 👑\n\n"
-                     "**Lệnh Quản lý:**\n"
-                     "- `/add <user_id>`: Thêm người dùng.\n"
-                     "- `/ban <user_id>`: Xóa người dùng.\n"
-                     "- `/show`: Hiển thị danh sách người dùng.\n\n"
-                     "**Lệnh Thành viên:**\n"
-                     "- `/massN <file>`: Bắt đầu check thẻ với N luồng.\n\n"
-                     "**Lệnh Công khai:**\n"
-                     "- `/start`: Khởi động bot.\n"
-                     "- `/info`: Lấy ID Telegram của bạn.\n"
-                     "- `/help`: Xem tin nhắn này.")
+        help_text = f"👑 **Trợ giúp dành cho Admin** 👑\n\n{admin_commands}\n{member_commands}\n{base_commands}"
     elif user_id in load_users():
-        help_text = ("👤 **Trợ giúp dành cho Thành viên** 👤\n\n"
-                     "Bạn đã được cấp quyền sử dụng các lệnh sau:\n\n"
-                     "**Lệnh Chính:**\n"
-                     "- `/massN <file>`: Gửi tệp .txt kèm chú thích này để bắt đầu check thẻ với N luồng (ví dụ: `/mass10`).\n\n"
-                     "**Lệnh Cơ bản:**\n"
-                     "- `/start`: Khởi động bot.\n"
-                     "- `/info`: Lấy ID Telegram của bạn.\n"
-                     "- `/help`: Xem tin nhắn này.")
+        help_text = f"👤 **Trợ giúp dành cho Thành viên** 👤\n\nBạn đã được cấp quyền sử dụng các lệnh sau:\n\n{member_commands}\n{base_commands}"
     else:
-        help_text = ("👋 **Trợ giúp** 👋\n\n"
-                     "Các lệnh bạn có thể sử dụng:\n"
-                     "- `/start`: Khởi động bot và xem ID.\n"
-                     "- `/info`: Lấy lại ID Telegram của bạn.\n"
-                     "- `/help`: Xem tin nhắn này.\n\n"
+        help_text = (f"👋 **Trợ giúp** 👋\n\n"
+                     f"Các lệnh bạn có thể sử dụng:\n{base_commands}\n\n"
                      f"Để sử dụng các tính năng chính, vui lòng liên hệ Admin: {ADMIN_USERNAME}")
     await update.message.reply_text(help_text)
 
@@ -199,6 +193,61 @@ async def show_users(update, context):
     message = "👥 **Danh sách các ID được phép sử dụng bot:**\n\n"
     for user_id in users: message += f"- `{user_id}`\n"
     await update.message.reply_text(message)
+
+# --- LỆNH CHECK ĐƠN MỚI ---
+async def cs_command(update, context):
+    user = update.effective_user
+    # 1. Kiểm tra quyền
+    if user.id != ADMIN_ID and user.id not in load_users():
+        await update.message.reply_text("⛔️ **Truy cập bị từ chối!**\nBạn không có quyền sử dụng lệnh này.")
+        return
+
+    # 2. Kiểm tra cú pháp
+    if not context.args:
+        await update.message.reply_text("⚠️ Cú pháp không đúng. Vui lòng sử dụng:\n`/cs cc|mm|yy|cvv`")
+        return
+        
+    line = " ".join(context.args)
+    if len(line.split('|')) != 4:
+        await update.message.reply_text("⚠️ Định dạng thẻ không đúng. Vui lòng sử dụng:\n`/cs cc|mm|yy|cvv`")
+        return
+
+    # 3. Gửi tin nhắn chờ
+    msg = await update.message.reply_text("⏳ *Đang kiểm tra thẻ của bạn, vui lòng chờ...*")
+
+    try:
+        # 4. Chạy hàm check_card trong một luồng riêng
+        status, original_line, full_response, bin_info = await asyncio.to_thread(check_card, line)
+        
+        # 5. Định dạng kết quả
+        status_map = {
+            'success': ("✅ CHARGED 0.5$", "Giao dịch thành công! Thẻ của bạn đã bị trừ 0.5$.", "success"),
+            'decline': ("❌ DECLINED", "Giao dịch bị từ chối bởi ngân hàng phát hành.", "decline"),
+            'custom': ("🔒 3D SECURE", "Thẻ yêu cầu xác thực 3D Secure.", "custom"),
+            'error': ("❗️ LỖI", f"Đã xảy ra lỗi trong quá trình kiểm tra. Chi tiết: {full_response}", "error"),
+            'unknown': ("❔ UNKNOWN", "Không thể xác định trạng thái thẻ từ phản hồi.", "unknown"),
+        }
+        
+        status_text, response_message, status_key = status_map.get(status, status_map['unknown'])
+
+        bin_details = (f"*- Ngân hàng:* `{bin_info.get('bank', 'N/A')}`\n"
+                       f"*- Quốc gia:* `{bin_info.get('country', 'N/A')}`\n"
+                       f"*- Loại thẻ:* `{bin_info.get('type', 'N/A')} - {bin_info.get('brand', 'N/A')}`\n"
+                       f"*- Cấp độ:* `{bin_info.get('level', 'N/A')}`")
+
+        final_message = (f"**💠 KẾT QUẢ KIỂM TRA THẺ 💠**\n\n"
+                         f"**💳 Thẻ:** `{original_line}`\n\n"
+                         f"**🚦 Trạng thái: {status_text}**\n\n"
+                         f"**💬 Phản hồi:**\n`{response_message}`\n\n"
+                         f"**ℹ️ Thông tin BIN:**\n{bin_details}\n\n"
+                         f"👤 *Checked by: {user.mention_markdown()}*")
+                         
+        await msg.edit_text(final_message)
+
+    except Exception as e:
+        logger.error(f"Lỗi nghiêm trọng trong lệnh /cs: {e}")
+        await msg.edit_text(f"⛔️ **Lỗi hệ thống!**\nĐã có sự cố không mong muốn xảy ra khi xử lý yêu cầu của bạn. Vui lòng thử lại sau.\n`{e}`")
+
 
 # --- HÀM XỬ LÝ CHÍNH (NÂNG CẤP) ---
 async def mass_check_handler(update, context):
@@ -301,6 +350,7 @@ def main():
     defaults = Defaults(parse_mode=ParseMode.MARKDOWN)
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
+    # Lệnh cơ bản và quản lý
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("info", info))
     application.add_handler(CommandHandler("help", help_command))
@@ -308,6 +358,8 @@ def main():
     application.add_handler(CommandHandler("ban", ban_user))
     application.add_handler(CommandHandler("show", show_users))
     
+    # Lệnh check thẻ (mới và cũ)
+    application.add_handler(CommandHandler("cs", cs_command)) # THÊM DÒNG MỚI
     application.add_handler(MessageHandler(filters.Document.TEXT & filters.CaptionRegex(r'^/mass(\d*)'), mass_check_handler))
     
     logger.info(f"Bot đang chạy với Admin ID: {ADMIN_ID}")
