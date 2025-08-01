@@ -565,8 +565,10 @@ async def cs_command(update, context):
     
     line = " ".join(context.args)
     msg = await update.message.reply_text("⏳ *Checking your card, please wait...*")
+    start_time = time.time()
     try:
         status, original_line, full_response, bin_info = await asyncio.to_thread(check_card, line)
+        duration = time.time() - start_time
 
         # Xử lý riêng cho thẻ VIETNAM bị từ chối theo yêu cầu
         is_vn_decline = status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE'
@@ -577,6 +579,7 @@ async def cs_command(update, context):
                              f"**🚦 Status: ❌ DECLINED**\n"
                              f"**💬 Response:** `DECLINED`\n\n"
                              f"**🏦 Gateway:** `Charge 0.5$ Auth Api`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
                              f"👤 *Checker by: {ADMIN_USERNAME}*")
         else:
             # Xử lý cho tất cả các trường hợp khác
@@ -599,6 +602,7 @@ async def cs_command(update, context):
                              f"**💬 Response:** `{response_message}`\n\n"
                              f"**🏦 Gateway:** `Charge 0.5$ Auth Api`\n\n"
                              f"**ℹ️ BIN Info:**\n{bin_str}\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
                              f"👤 *Checker by: {ADMIN_USERNAME}*")
         
         await msg.edit_text(final_message)
@@ -650,6 +654,7 @@ async def multi_check_command(update, context):
 
     # --- BẮT ĐẦU CHECK ---
     status_message = await update.message.reply_text(f"⏳ Đang khởi tạo... Chuẩn bị check `{total_lines}` thẻ.")
+    start_time = time.time()
     
     try:
         if user.id != ADMIN_ID:
@@ -697,7 +702,7 @@ async def multi_check_command(update, context):
                         pass
                     last_update_time = time.time()
         
-        # Cập nhật thống kê chung
+        duration = time.time() - start_time
         update_user_stats(user.id, user, counts)
 
         # Xây dựng tin nhắn kết quả cuối cùng
@@ -707,7 +712,8 @@ async def multi_check_command(update, context):
             f"❌ **Declined:** `{counts['decline']}`",
             f"🔒 **3D Secure:** `{counts['custom']}`",
             f"📋 **Invalid Format:** `{counts['invalid_format']}`",
-            f"❗️ **Errors:** `{counts['error']}`\n"
+            f"❗️ **Errors:** `{counts['error']}`",
+            f"**⏱️ Took:** `{duration:.2f}s`\n"
             f"-----------------------------------------"
         ]
 
@@ -817,6 +823,7 @@ async def mass_check_handler(update, context):
     os.makedirs(session_dir, exist_ok=True)
     
     status_message = await update.message.reply_text(f"⏳ Initializing... Checking `{total_lines}` cards with `{num_threads}` threads.")
+    start_time = time.time()
     
     try:
         if user.id != ADMIN_ID:
@@ -867,6 +874,7 @@ async def mass_check_handler(update, context):
                     except telegram.error.BadRequest: pass
                     last_update_time = time.time()
         
+        duration = time.time() - start_time
         # Construct the final summary message
         final_summary_text = (
             f"**📊 Check Complete!**\n\n"
@@ -875,7 +883,8 @@ async def mass_check_handler(update, context):
             f"❌ **Declined:** `{counts['decline']}`\n"
             f"🔒 **3D Secure:** `{counts['custom']}`\n"
             f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
-            f"❔ **Errors:** `{counts['error']}`"
+            f"❔ **Errors:** `{counts['error']}`\n\n"
+            f"**⏱️ Took:** `{duration:.2f}s`"
         )
         
         # Edit the status message to show the final summary
