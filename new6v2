@@ -199,6 +199,23 @@ def check_card(line):
     if not is_valid:
         return 'invalid_format', line, error_message, {}
 
+    # *** THAY ĐỔI LOGIC: Kiểm tra năm hết hạn ***
+    try:
+        year_str = ano.strip()
+        if len(year_str) == 2:
+            full_year = int(f"20{year_str}")
+        elif len(year_str) == 4:
+            full_year = int(year_str)
+        else:
+            # Trường hợp không hợp lệ đã được xử lý bởi validate_card_format
+            full_year = 0 
+
+        if full_year < 2024:
+            return 'decline', line, 'EXPIRED_CARD_DECLINE', {}
+    except ValueError:
+        # Xử lý nếu `ano` không phải là số, mặc dù đã được validate
+        return 'invalid_format', line, "Năm hết hạn không hợp lệ.", {}
+
     if len(ano) == 2: ano = f"20{ano}"
     
     session = requests.Session()
@@ -209,8 +226,6 @@ def check_card(line):
 
     try:
         bin_to_check = cc[:6]
-        # *** FIX LỖI URL ***
-        # Thay đổi cách tạo URL để đảm bảo tính chính xác, tránh lỗi f-string
         bin_url = "https://bins.antipublic.cc/bins/" + bin_to_check
         bin_headers = {"user-agent": ua, "Pragma": "no-cache", "Accept": "*/*"}
         bin_response, error = make_request_with_retry(session, 'get', bin_url, headers=bin_headers, timeout=10)
@@ -218,15 +233,21 @@ def check_card(line):
         if error:
             return 'error', line, f"Lỗi kiểm tra BIN: {error}", {}
         
-        if bin_response and bin_response.status_code == 200 and "not found" not in bin_response.text:
-            try:
-                data = bin_response.json()
-                if isinstance(data, dict):
-                    bin_info.update(data)
-                else:
-                    logger.warning(f"API BIN trả về dữ liệu không phải dictionary cho BIN {bin_to_check}: {data}")
-            except json.JSONDecodeError:
-                logger.warning(f"Lỗi phân tích JSON từ BIN check cho BIN {bin_to_check}")
+        if bin_response:
+            response_text_lower = bin_response.text.lower()
+            # Kiểm tra cả hai trường hợp "not found"
+            if "not found" in response_text_lower and ('"detail":' in response_text_lower or bin_response.status_code != 200):
+                return 'decline', line, 'INVALID_BIN_DECLINE', {}
+            
+            if bin_response.status_code == 200:
+                try:
+                    data = bin_response.json()
+                    if isinstance(data, dict):
+                        bin_info.update(data)
+                    else:
+                        logger.warning(f"API BIN trả về dữ liệu không phải dictionary cho BIN {bin_to_check}: {data}")
+                except json.JSONDecodeError:
+                    logger.warning(f"Lỗi phân tích JSON từ BIN check cho BIN {bin_to_check}")
 
         country_name_str = bin_info.get('country_name') or ''
         if country_name_str.upper() == 'VIETNAM':
@@ -535,12 +556,10 @@ async def bin_command(update, context):
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         session.headers.update({"User-Agent": ua})
         
-        # *** FIX LỖI URL ***
-        # Thay đổi cách tạo URL để đảm bảo tính chính xác
         bin_url = "https://bins.antipublic.cc/bins/" + bin_to_check
         bin_response, error = make_request_with_retry(session, 'get', bin_url, timeout=10)
 
-        if error or not bin_response or bin_response.status_code != 200 or "not found" in bin_response.text:
+        if error or not bin_response or bin_response.status_code != 200 or "not found" in bin_response.text.lower():
             await msg.edit_text(f"❌ Không tìm thấy thông tin cho BIN `{bin_to_check}`.")
             return
 
@@ -595,12 +614,30 @@ async def cs_command(update, context):
         duration = time.time() - start_time
 
         is_vn_decline = status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE'
+        is_invalid_bin_decline = status == 'decline' and full_response == 'INVALID_BIN_DECLINE'
+        is_expired_card_decline = status == 'decline' and full_response == 'EXPIRED_CARD_DECLINE'
 
-        if is_vn_decline:
+        if is_invalid_bin_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
                              f"**💳 Card:** `{original_line}`\n"
                              f"**🚦 Status: ❌ DECLINED**\n"
-                             f"**💬 Response:** `DECLINED`\n\n"
+                             f"**💬 Response:** `Invalid Card Number (BIN not found)`\n\n"
+                             f"**🏦 Gateway:** `BIN Check`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
+        elif is_expired_card_decline:
+            final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `Card Expired`\n\n"
+                             f"**🏦 Gateway:** `Pre-Check`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
+        elif is_vn_decline:
+            final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `DECLINED (Vietnam BIN)`\n\n"
                              f"**🏦 Gateway:** `Charge 0.5$ Auth Api`\n\n"
                              f"**⏱️ Took:** `{duration:.2f}s`\n\n"
                              f"👤 *Checker by: {ADMIN_USERNAME}*")
@@ -719,7 +756,11 @@ async def multi_check_command(update, context):
                     status_icons = {'success': '✅', 'decline': '❌', 'custom': '🔒', 'invalid_format': '📋', 'error': '❗️', 'unknown': '❔'}
                     
                     if status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE':
-                        result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED`"
+                        result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (VN BIN)`"
+                    elif status == 'decline' and full_response == 'INVALID_BIN_DECLINE':
+                        result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid BIN)`"
+                    elif status == 'decline' and full_response == 'EXPIRED_CARD_DECLINE':
+                        result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Expired)`"
                     elif status == 'invalid_format':
                         result_line = f"{status_icons[status]} `{original_line}` | Lý do: {str(full_response)[:50]}" 
                     else:
@@ -875,7 +916,11 @@ async def mass_check_handler(update, context):
                     counts[status] = counts.get(status, 0) + 1
                     
                     if status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE':
-                        line_to_save = f"{original_line} | DECLINED"
+                        line_to_save = f"{original_line} | DECLINED (VN BIN)"
+                    elif status == 'decline' and full_response == 'INVALID_BIN_DECLINE':
+                        line_to_save = f"{original_line} | DECLINED (Invalid BIN)"
+                    elif status == 'decline' and full_response == 'EXPIRED_CARD_DECLINE':
+                        line_to_save = f"{original_line} | DECLINED (Expired)"
                     elif status == 'invalid_format':
                         line_to_save = f"{original_line} | Reason: {full_response}"
                     else:
