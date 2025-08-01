@@ -1,1 +1,218 @@
+import requests
+import re
+import datetime
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse, urlunparse
+from telegram import Update, ParseMode, User
+from telegram.ext import Updater, CommandHandler, CallbackContext
 
+# --- CẤU HÌNH ---
+# BẠN PHẢI TỰ THAY THẾ CÁC GIÁ TRỊ DƯỚI ĐÂY
+TELEGRAM_TOKEN = '8383293948:AAEDVbBV05dXWHNZXod3RRJjmwqc2N4xsjQ' 
+ADMIN_ID = 5127429005 # Thay bằng ID admin của bạn nếu cần
+
+# Danh sách các cổng thanh toán và các từ khóa nhận dạng
+# PHIÊN BẢN MỞ RỘNG NHẤT
+PAYMENT_GATEWAYS = {
+    # === Cổng thanh toán quốc tế phổ biến ===
+    'PayPal': ['paypal.com', 'paypalobjects.com', 'paypal-sdk'],
+    'Stripe': ['stripe.com', 'js.stripe.com', 'stripe-js', 'stripecdn.com', 'stripe.network'],
+    'Adyen': ['adyen.com', 'checkout.adyen.com', 'js.adyen.com'],
+    'Braintree': ['braintreegateway.com', 'js.braintreegateway.com', 'braintree-api'],
+    'Square': ['squareup.com', 'js.squareup.com'],
+    'Worldpay': ['worldpay.com', 'fisglobal.com', 'wp-ecommerce.com'],
+    'Checkout.com': ['checkout.com', 'js.checkout.com'],
+    '2Checkout (Verifone)': ['2checkout.com', '2monetize.com', 'verifone.com'],
+    'Amazon Pay': ['amazon.com/pay', 'pay.amazon.com', 'payments.amazon.com'],
+    'Skrill': ['skrill.com'],
+    'Neteller': ['neteller.com'],
+    'Payoneer': ['payoneer.com'],
+    'dLocal': ['dlocal.com'],
+    'Global Payments': ['globalpaymentsinc.com', 'globalpay.com'],
+    
+    # === Ví điện tử & Nền tảng ===
+    'Google Pay': ['pay.google.com', 'google-pay', 'googlepay'],
+    'Apple Pay': ['apple-pay', 'ApplePay'],
+    'Shopify Payments': ['Shopify.Payments', 'cdn.shopify.com/shopifycloud/payment-sheet'],
+
+    # === Mua ngay, trả sau (Buy Now, Pay Later) ===
+    'Klarna': ['klarna.com', 'klarna.js', 'klarnacdn.net', 'sofort.com'],
+    'Afterpay / Clearpay': ['afterpay.com', 'clearpay.co.uk'],
+    'Affirm': ['affirm.com'],
+    'Atome': ['atome.sg', 'atome.my', 'atome.id'],
+
+    # === Cổng thanh toán khu vực Châu Mỹ ===
+    'Authorize.Net': ['authorize.net', 'jstest.authorize.net', 'accept.authorize.net'],
+    'Moneris': ['moneris.com'],
+    'WePay (Chase)': ['wepay.com'],
+    'Mercado Pago': ['mercadopago.com', 'mercadopago.com.br', 'mercadolibre.com'],
+    'PagSeguro (PagBank)': ['pagseguro.uol.com.br', 'pagseguro.com.br'],
+    'Cielo': ['cielo.com.br'],
+    'Ebanx': ['ebanx.com'],
+    
+    # === Cổng thanh toán khu vực Châu Âu ===
+    'Mollie': ['mollie.com', 'mollie.nl'],
+    'Sage Pay (Opayo)': ['sagepay.com', 'opayo.co.uk'],
+    'Trustly': ['trustly.com'],
+    'iDEAL': ['ideal-payment', 'ideal.nl'],
+    'Bancontact': ['bancontact.com', 'bancontact.be'],
+    'Giropay': ['giropay.de'],
+    'Przelewy24 (P24)': ['przelewy24.pl'],
+    'SecurionPay': ['securionpay.com'],
+    'GoCardless': ['gocardless.com'],
+    'YooKassa (Yandex)': ['yookassa.ru', 'kassa.yandex.ru'],
+
+    # === Cổng thanh toán khu vực Châu Á & Thái Bình Dương ===
+    'Alipay': ['alipay.com', 'alipayobjects.com'],
+    'WeChat Pay': ['pay.weixin.qq.com'],
+    'Razorpay': ['razorpay.com', 'checkout.razorpay.com'],
+    'Paytm': ['paytm.com', 'paytm.in'],
+    'CCAvenue': ['ccavenue.com'],
+    'PayU': ['payu.com', 'payu.in', 'payulatam.com'],
+    'eGHL': ['e-ghl.com', 'ghl.com'],
+    'Omise': ['omise.co'],
+    'eWAY': ['eway.io', 'eway.com.au'],
+    'POLi': ['polipayments.com'],
+    'Dragonpay': ['dragonpay.ph'],
+    'PayTabs': ['paytabs.com'],
+    'GrabPay': ['grab.com/pay'],
+    'GoPay': ['gopay.co.id'],
+    'VnPay': ['vnpay.vn', 'sandbox.vnpayment.vn', 'vnpayment.vn'],
+    'MoMo': ['momo.vn', 'sdk.momo.vn'],
+    'ZaloPay': ['zalopay.vn', 'sbgateway.zalopay.vn'],
+
+    # === Cổng thanh toán khu vực Châu Phi ===
+    'Paystack': ['paystack.com', 'js.paystack.co'],
+    'Flutterwave': ['flutterwave.com', 'ravepay.co', 'rave.flutterwave.com'],
+
+    # === Cổng thanh toán tiền mã hóa ===
+    'Coinbase Commerce': ['commerce.coinbase.com'],
+    'BitPay': ['bitpay.com'],
+    'CoinPayments': ['coinpayments.net'],
+
+    # === Cổng thanh toán rủi ro cao (High-risk) / Niche ===
+    'CCBill': ['ccbill.com'],
+    'Paxum': ['paxum.com'],
+}
+
+# --- CÁC HÀM LOGIC ---
+
+def normalize_url(url: str) -> str:
+    """Chuẩn hóa URL để đảm bảo có scheme (http/https)"""
+    if not re.match(r'^[a-zA-Z0-9]+://', url):
+        url = 'https://' + url
+    
+    parsed_url = urlparse(url)
+    clean_url = urlunparse((parsed_url.scheme, parsed_url.netloc, '/', '', '', ''))
+    return clean_url
+
+def check_website(url: str) -> dict:
+    results = {
+        'site': None,
+        'gateways': set(),
+        'cloudflare': False,
+        'captcha': False,
+        'error': None
+    }
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+    }
+    try:
+        normalized_url = normalize_url(url)
+        results['site'] = urlparse(normalized_url).netloc
+        response = requests.get(normalized_url, headers=headers, timeout=15, allow_redirects=True)
+        response.raise_for_status()
+        content = response.text.lower()
+        if 'cloudflare' in response.headers.get('Server', '').lower() or 'cf-ray' in response.headers:
+            results['cloudflare'] = True
+        soup = BeautifulSoup(content, 'html.parser')
+        page_text_and_scripts = ' '.join(str(s) for s in soup.find_all(['script', 'body']))
+        for gateway, keywords in PAYMENT_GATEWAYS.items():
+            for keyword in keywords:
+                if keyword.lower() in page_text_and_scripts:
+                    results['gateways'].add(gateway)
+        captcha_keywords = ['recaptcha', 'hcaptcha', 'captcha', 'turnstile', 'geetest']
+        for keyword in captcha_keywords:
+            if keyword in page_text_and_scripts:
+                results['captcha'] = True
+                break
+    except requests.exceptions.Timeout:
+        results['error'] = "Lỗi: Yêu cầu hết thời gian chờ."
+    except requests.exceptions.TooManyRedirects:
+        results['error'] = "Lỗi: Trang web có quá nhiều lần chuyển hướng."
+    except requests.exceptions.RequestException:
+        results['error'] = "Lỗi kết nối: Không thể truy cập trang web. Hãy chắc chắn URL chính xác."
+    except Exception as e:
+        results['error'] = f"Đã xảy ra lỗi không xác định: {e}"
+    return results
+
+# --- CÁC HÀM XỬ LÝ LỆNH TELEGRAM ---
+
+def start(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    update.message.reply_html(
+        rf"Chào {user.mention_html()}!",
+        reply_to_message_id=update.message.message_id
+    )
+    update.message.reply_text(
+        "Tôi là Bot tra cứu Gateway! Gửi cho tôi một lệnh với cú pháp:\n\n"
+        "`/check example.com`\n\n"
+        "để bắt đầu.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+def check_command(update: Update, context: CallbackContext) -> None:
+    if not context.args:
+        update.message.reply_text("Vui lòng nhập URL của trang web. \nVí dụ: `/check raisenow.com`", parse_mode=ParseMode.MARKDOWN)
+        return
+    url = context.args[0]
+    user_info = update.message.from_user
+    msg = update.message.reply_text("🔎 Đang nạp thông tin, vui lòng chờ...")
+    start_time = datetime.datetime.now()
+    data = check_website(url)
+    end_time = datetime.datetime.now()
+    time_taken = (end_time - start_time).total_seconds()
+    if data['error']:
+        text_response = f"❌ *Lỗi*\n`{data['error']}`"
+        context.bot.edit_message_text(
+            chat_id=update.message.chat_id,
+            message_id=msg.message_id,
+            text=text_response,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    gateways_str = ", ".join(sorted(list(data['gateways']))) if data['gateways'] else "Không tìm thấy"
+    captcha_icon = "🚫" if data['captcha'] else "✅"
+    cloudflare_icon = "✅" if data['cloudflare'] else "❌"
+    text_response = (
+        f"✅ *Information fetched*\n\n"
+        f"Site ➝ `{data['site']}`\n"
+        f"Gateways ➝ `{gateways_str}`\n"
+        f"Security ➝ Captcha : {captcha_icon} | Cloudflare : {cloudflare_icon}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💎 *Time Taken* : `{time_taken:.2f}s`\n"
+        f"💎 *Checked by* {user_info.mention_html()} [Free]\n"
+        f"💎 *Bot Gateway Lookup V3*\n"
+    )
+    context.bot.edit_message_text(
+        chat_id=update.message.chat_id,
+        message_id=msg.message_id,
+        text=text_response,
+        parse_mode=ParseMode.HTML
+    )
+
+def main() -> None:
+    updater = Updater(TELEGRAM_TOKEN, use_context=True)
+    dispatcher = updater.dispatcher
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CommandHandler("check", check_command))
+    dispatcher.add_handler(CommandHandler("bh", check_command))
+    updater.start_polling()
+    print("Bot đã khởi động và đang chạy...")
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
