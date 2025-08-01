@@ -14,6 +14,7 @@ from datetime import datetime
 from pytz import timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, User
 from telegram.constants import ParseMode
+from telegram.helpers import escape_markdown # <<< THÊM IMPORT NÀY
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- CẤU HÌNH ---
@@ -1204,7 +1205,8 @@ async def show_check_command(update, context):
     if update.effective_user.id != ADMIN_ID: return
     stats = load_json_file(STATS_FILE)
     if not stats:
-        await update.message.reply_text("Chưa có dữ liệu thống kê nào."); return
+        await update.message.reply_text("Chưa có dữ liệu thống kê nào.")
+        return
     
     message = "📊 **THỐNG KÊ CHECK CỦA USER** 📊\n\n"
     
@@ -1216,7 +1218,14 @@ async def show_check_command(update, context):
         data = stats.get(user_id_str)
 
         if isinstance(data, dict):
-            user_display = f"@{data.get('username')}" if data.get('username') else f"ID: {user_id_str}"
+            username = data.get('username')
+            if username:
+                # Xử lý các ký tự đặc biệt trong username để tránh lỗi Markdown
+                safe_username = escape_markdown(str(username))
+                user_display = f"@{safe_username}"
+            else:
+                user_display = f"ID: {user_id_str}"
+
             message += (f"👤 **{user_display}** (`{user_id_str}`)\n"
                         f"  ✅ Charged: `{data.get('total_charged', 0)}`\n"
                         f"  🔒 Custom: `{data.get('total_custom', 0)}`\n"
@@ -1234,6 +1243,7 @@ async def show_check_command(update, context):
             await update.message.reply_document(document=doc, filename="stats.txt")
     else:
         await update.message.reply_text(message)
+
 
 async def loot_file_command(update, context):
     if update.effective_user.id != ADMIN_ID: return
