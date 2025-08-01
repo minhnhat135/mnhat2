@@ -406,6 +406,15 @@ async def get_help_text(user: User, lang_code: str):
     user_id = user.id
     user_mass_limit = get_user_limit(user_id)
     user_multi_limit = get_user_multi_limit(user_id)
+
+    gate_names = {
+        '1': "Charge 0.5 (Gate 1)",
+        '2': "Charge 0.5 V2 (Gate 2)"
+    }
+    active_gate = get_active_gate()
+    active_gate_name = gate_names.get(active_gate, 'Không xác định')
+    gate_status_line_vi = f"\nℹ️ **Cổng check hiện tại:** `{active_gate_name}`"
+    gate_status_line_en = f"\nℹ️ **Current Check Gate:** `{active_gate_name}`"
     
     text_vi = {
         "public": (
@@ -499,11 +508,12 @@ async def get_help_text(user: User, lang_code: str):
     )
 
     lang_texts = text_vi if lang_code == 'vi' else text_en
+    gate_status_line = gate_status_line_vi if lang_code == 'vi' else gate_status_line_en
     
     if user_id == ADMIN_ID:
-        return f"{admin_commands}\n\n{text_vi['member'].split('💳 **Hạn mức của bạn:**')[0].strip()}"
+        return f"{admin_commands}{gate_status_line_vi}\n\n{text_vi['member'].split('💳 **Hạn mức của bạn:**')[0].strip()}"
     elif user_id in load_users():
-        return f"{lang_texts['member']}\n\n{lang_texts['public']}"
+        return f"{lang_texts['member']}{gate_status_line}\n\n{lang_texts['public']}"
     else:
         return lang_texts['public']
 
@@ -819,7 +829,11 @@ async def multi_check_command(update, context):
             )
             return
 
-    status_message = await update.message.reply_text(f"⏳ Đang khởi tạo... Chuẩn bị check `{total_lines}` thẻ.")
+    gate_names = {'1': "Charge 0.5", '2': "Charge 0.5 V2"}
+    active_gate = get_active_gate()
+    gate_name = gate_names.get(active_gate, f"Gate {active_gate}")
+    
+    status_message = await update.message.reply_text(f"⏳ Đang khởi tạo... Chuẩn bị check `{total_lines}` thẻ qua **{gate_name}**.")
     start_time = time.time()
     
     cancel_event = threading.Event()
@@ -838,14 +852,12 @@ async def multi_check_command(update, context):
             for future in as_completed(future_to_line):
                 if cancel_event.is_set():
                     counts['cancelled'] += 1
-                    continue # Không xử lý các future còn lại
+                    continue
 
                 processed_count += 1
                 try:
                     status, original_line, full_response, bin_info = future.result()
-                    
                     counts[status] = counts.get(status, 0) + 1
-                    
                     status_icons = {'success': '✅', 'decline': '❌', 'custom': '🔒', 'invalid_format': '📋', 'error': '❗️', 'unknown': '❔', 'cancelled': '🛑'}
                     
                     result_line = ""
@@ -858,12 +870,12 @@ async def multi_check_command(update, context):
                             result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Expired)`"
                         elif full_response == 'INVALID_CARDNUMBER_DECLINE':
                             result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid Card Number)`"
-                        else: # Decline chung
+                        else:
                             result_line = f"{status_icons['decline']} `{original_line}`"
                     elif status == 'invalid_format':
                         result_line = f"{status_icons[status]} `{original_line}` | Lý do: {str(full_response)[:50]}" 
                     elif status == 'cancelled':
-                        continue # Bỏ qua không thêm vào kết quả
+                        continue
                     else:
                         bank_str = bin_info.get('bank') or 'N/A'
                         type_str = bin_info.get('type') or 'N/A'
@@ -886,6 +898,7 @@ async def multi_check_command(update, context):
                     progress_bar = create_progress_bar(processed_count, total_lines, length=20)
                     status_text = (
                         f"**🚀 Checking in progress...**\n{progress_bar}\n"
+                        f"**Gate:** `{gate_name}`\n"
                         f"**Progress:** `{processed_count}/{total_lines}`\n\n"
                         f"✅ **Charged:** `{counts['success']}` | ❌ **Declined:** `{counts['decline']}`\n"
                         f"🔒 **3D Secure:** `{counts['custom']}` | ❔ **Errors:** `{counts['error']}`"
@@ -909,12 +922,14 @@ async def multi_check_command(update, context):
 
         final_message = [
             f"**📊 Check Complete!**\n",
+            f"**Gate Used:** `{gate_name}`",
+            f"**Total Cards:** `{total_lines}`",
+            f"**Time Taken:** `{duration:.2f}s`\n",
             f"✅ **Charged:** `{counts['success']}`",
             f"❌ **Declined:** `{counts['decline']}`",
             f"🔒 **3D Secure:** `{counts['custom']}`",
             f"📋 **Invalid Format:** `{counts['invalid_format']}`",
-            f"❗️ **Errors:** `{counts['error']}`",
-            f"**⏱️ Took:** `{duration:.2f}s`\n"
+            f"❗️ **Errors:** `{counts['error']}`\n",
             f"-----------------------------------------"
         ]
 
@@ -997,11 +1012,15 @@ async def mass_check_handler(update, context):
 
     num_threads = max(1, num_threads)
 
+    gate_names = {'1': "Charge 0.5", '2': "Charge 0.5 V2"}
+    active_gate = get_active_gate()
+    gate_name = gate_names.get(active_gate, f"Gate {active_gate}")
+
     session_timestamp = datetime.now(VIETNAM_TZ).strftime("%Y%m%d-%H%M%S")
     session_dir = os.path.join(LOG_DIR, str(user.id), session_timestamp)
     os.makedirs(session_dir, exist_ok=True)
     
-    status_message = await update.message.reply_text(f"⏳ Khởi tạo... Chuẩn bị check `{total_lines}` thẻ với `{num_threads}` luồng.")
+    status_message = await update.message.reply_text(f"⏳ Khởi tạo... Chuẩn bị check `{total_lines}` thẻ với `{num_threads}` luồng qua **{gate_name}**.")
     start_time = time.time()
     
     cancel_event = threading.Event()
@@ -1025,7 +1044,6 @@ async def mass_check_handler(update, context):
                 processed_count += 1
                 try:
                     status, original_line, full_response, bin_info = future.result()
-                    
                     counts[status] = counts.get(status, 0) + 1
                     
                     line_to_save = ""
@@ -1038,12 +1056,12 @@ async def mass_check_handler(update, context):
                             line_to_save = f"{original_line} | DECLINED (Expired)"
                         elif full_response == 'INVALID_CARDNUMBER_DECLINE':
                             line_to_save = f"{original_line} | DECLINED (Invalid Card Number)"
-                        else: # Decline chung
+                        else:
                             line_to_save = f"{original_line} | DECLINED"
                     elif status == 'invalid_format':
                         line_to_save = f"{original_line} | Reason: {full_response}"
                     elif status == 'cancelled':
-                        continue # Bỏ qua
+                        continue
                     else:
                         bank_str = bin_info.get('bank') or 'N/A'
                         type_str = bin_info.get('type') or 'N/A'
@@ -1069,7 +1087,8 @@ async def mass_check_handler(update, context):
                 if time.time() - last_update_time > 2.0 or processed_count == total_lines:
                     progress_bar = create_progress_bar(processed_count, total_lines, length=20)
                     status_text = (f"**🚀 Checking in progress...**\n{progress_bar}\n"
-                                   f"**Progress:** `{processed_count}/{total_lines}` | **Threads:** `{num_threads}`\n\n"
+                                   f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`\n"
+                                   f"**Progress:** `{processed_count}/{total_lines}`\n\n"
                                    f"✅ **Charged:** `{counts['success']}`\n"
                                    f"❌ **Declined:** `{counts['decline']}`\n"
                                    f"🔒 **3D Secure:** `{counts['custom']}`\n"
@@ -1092,6 +1111,7 @@ async def mass_check_handler(update, context):
         
         final_summary_text = (
             f"**📊 Check Complete!**\n\n"
+            f"**Gate Used:** `{gate_name}`\n"
             f"**Total:** `{total_lines}` | **Threads:** `{num_threads}`\n\n"
             f"✅ **Charged:** `{counts['success']}`\n"
             f"❌ **Declined:** `{counts['decline']}`\n"
@@ -1475,7 +1495,7 @@ def main():
     application.add_handler(CommandHandler("addlimitmulti", add_multi_limit_command))
     application.add_handler(CommandHandler("showcheck", show_check_command))
     application.add_handler(CommandHandler("lootfile", loot_file_command))
-    application.add_handler(CommandHandler("gate", gate_command)) # << Lệnh mới cho admin
+    application.add_handler(CommandHandler("gate", gate_command))
     application.add_handler(CommandHandler("on", turn_bot_on))
     application.add_handler(CommandHandler("off", turn_bot_off))
     application.add_handler(CommandHandler("send", send_message_command))
