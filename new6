@@ -280,16 +280,6 @@ def create_progress_bar(current, total, length=10):
     bar = '█' * filled_len + '░' * (length - filled_len)
     return f"[{bar}] {int(fraction * 100)}%"
 
-def get_flag_emoji(country_code):
-    """Chuyển đổi mã quốc gia (2 chữ cái) thành emoji cờ."""
-    if not country_code or len(country_code) != 2:
-        return ''
-    # Công thức chuyển đổi ký tự sang Regional Indicator Symbol
-    try:
-        return ''.join(chr(0x1F1E6 + ord(char.upper()) - ord('A')) for char in country_code)
-    except Exception:
-        return '' # Trả về chuỗi rỗng nếu chuyển đổi thất bại
-
 # --- CÁC LỆNH BOT ---
 async def start(update, context):
     user = update.effective_user
@@ -599,20 +589,17 @@ async def bin_command(update, context):
         level = bin_info.get('level', 'N/A').upper()
         bank = bin_info.get('bank', 'None')
         country_name = bin_info.get('country_name', 'N/A').upper()
-        country_code = bin_info.get('country_code')
 
         bin_info_parts = [p for p in [brand, card_type, level] if p and p != 'N/A']
         bin_info_line = " – ".join(bin_info_parts)
         
-        flag = get_flag_emoji(country_code)
-
         response_text = (
-            f"**BIN Info:** {bin_info_line}\n"
-            f"**Bank:** {bank}\n"
-            f"**Country:** {country_name} {flag}"
+            f"**BIN:** **{bin_info_line}**\n"
+            f"**Bank:** **{bank}**\n"
+            f"**Country:** **{country_name}**"
         )
 
-        final_message = f"**ℹ️ Thông Tin BIN:** `{bin_to_check}`\n```{response_text}```"
+        final_message = f"ℹ️ **Thông Tin BIN: ** `{bin_to_check}`\n\n{response_text}"
         await msg.edit_text(final_message)
 
     except json.JSONDecodeError:
@@ -673,23 +660,21 @@ async def cs_command(update, context):
             level = bin_info.get('level', 'N/A').upper()
             bank = bin_info.get('bank', 'None')
             country_name = bin_info.get('country_name', 'N/A').upper()
-            country_code = bin_info.get('country_code')
-            flag = get_flag_emoji(country_code)
             
             bin_info_parts = [p for p in [brand, card_type, level] if p and p != 'N/A']
             bin_info_line = " – ".join(bin_info_parts)
 
             bin_details_str = (
-                f"**BIN Info:** {bin_info_line}\n"
-                f"**Bank:** {bank}\n"
-                f"**Country:** {country_name} {flag}"
+                f"**BIN:** **{bin_info_line}**\n"
+                f"**Bank:** **{bank}**\n"
+                f"**Country:** **{country_name}**"
             )
 
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
                              f"**💳 Card:** `{original_line}`\n"
                              f"**🚦 Status: {status_text}**\n"
                              f"**💬 Response:** `{response_message}`\n\n"
-                             f"**ℹ️ BIN Info:**\n```{bin_details_str}```\n\n"
+                             f"ℹ️ **BIN Info:**\n{bin_details_str}\n\n"
                              f"**🏦 Gateway:** `Charge 0.5$ Auth Api`\n\n"
                              f"**⏱️ Took:** `{duration:.2f}s`\n\n"
                              f"👤 *Checker by: {ADMIN_USERNAME}*")
