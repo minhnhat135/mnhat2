@@ -26,6 +26,7 @@ LIMIT_FILE = "user_limits.json"
 STATS_FILE = "user_stats.json"
 PREFS_FILE = "user_prefs.json" # File lưu ngôn ngữ
 LOG_DIR = "check_logs" # Thư mục chính lưu log
+BOT_STATUS_FILE = "bot_status.json" # File lưu trạng thái on/off của bot
 
 # --- GIỚI HẠN MẶC ĐỊNH CHO THÀNH VIÊN ---
 DEFAULT_MEMBER_LIMIT = 100
@@ -36,6 +37,16 @@ VIETNAM_TZ = timezone('Asia/Ho_Chi_Minh')
 
 # --- BIẾN TOÀN CỤC ĐỂ THEO DÕI TÁC VỤ ĐANG CHẠY ---
 ACTIVE_CHECKS = set()
+
+# --- TIN NHẮN THÔNG BÁO ---
+MESSAGES_VI = {
+    "bot_off": "🔴 **THÔNG BÁO BẢO TRÌ** 🔴\n\nBot hiện đang tạm thời ngoại tuyến để bảo trì. Các lệnh check sẽ không hoạt động cho đến khi có thông báo mới. Cảm ơn sự kiên nhẫn của bạn!",
+    "bot_on": "🟢 **THÔNG BÁO HOẠT ĐỘNG** 🟢\n\nBot đã hoạt động trở lại. Cảm ơn bạn đã chờ đợi!",
+}
+MESSAGES_EN = {
+    "bot_off": "🔴 **MAINTENANCE NOTICE** 🔴\n\nThe bot is temporarily offline for maintenance. Checking commands will be disabled until further notice. Thank you for your patience!",
+    "bot_on": "🟢 **SERVICE RESUMED NOTICE** 🟢\n\nThe bot is back online. Thank you for waiting!",
+}
 
 # --- CẤU HÌNH LOGGING ---
 logging.basicConfig(
@@ -87,29 +98,49 @@ def set_user_lang(user_id, lang_code):
     prefs[str(user_id)] = lang_code
     save_json_file(PREFS_FILE, prefs)
 
+def is_bot_on():
+    """Kiểm tra xem bot có đang bật hay không."""
+    status = load_json_file(BOT_STATUS_FILE, default_data={'is_on': True})
+    return status.get('is_on', True)
+
+def set_bot_status(is_on: bool):
+    """Đặt trạng thái bật/tắt cho bot."""
+    save_json_file(BOT_STATUS_FILE, {'is_on': is_on})
+
 def update_user_stats(user_id, user_info, counts):
-    """Cập nhật file thống kê chung cho các user."""
+    """Cập nhật file thống kê chung cho các user, đảm bảo tất cả các key đều tồn tại."""
     stats = load_json_file(STATS_FILE)
     user_id_str = str(user_id)
     
-    if user_id_str not in stats:
-        stats[user_id_str] = {
-            'username': user_info.username,
-            'full_name': user_info.full_name,
-            'total_charged': 0,
-            'total_custom': 0,
-            'total_decline': 0,
-            'total_error': 0,
-            'total_invalid': 0,
-            'last_check_timestamp': ''
-        }
+    # Cấu trúc mặc định để đảm bảo tất cả các key đều có
+    default_user_stat = {
+        'username': None,
+        'full_name': None,
+        'total_charged': 0,
+        'total_custom': 0,
+        'total_decline': 0,
+        'total_error': 0,
+        'total_invalid': 0,
+        'last_check_timestamp': ''
+    }
+
+    # Lấy dữ liệu hiện có của user và cập nhật nó với cấu trúc mặc định
+    # Điều này sẽ thêm các key còn thiếu mà không ghi đè dữ liệu cũ
+    user_stat_data = stats.get(user_id_str, {})
+    default_user_stat.update(user_stat_data)
+    stats[user_id_str] = default_user_stat
     
+    # Bây giờ, tất cả các key được đảm bảo tồn tại để thực hiện phép cộng
     stats[user_id_str]['total_charged'] += counts.get('success', 0)
     stats[user_id_str]['total_custom'] += counts.get('custom', 0)
     stats[user_id_str]['total_decline'] += counts.get('decline', 0)
     stats[user_id_str]['total_error'] += counts.get('error', 0)
     stats[user_id_str]['total_invalid'] += counts.get('invalid_format', 0)
     stats[user_id_str]['last_check_timestamp'] = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Cập nhật lại thông tin user nếu nó đã thay đổi
+    stats[user_id_str]['username'] = user_info.username
+    stats[user_id_str]['full_name'] = user_info.full_name
     
     save_json_file(STATS_FILE, stats)
 
@@ -232,7 +263,7 @@ def check_card(line):
         return 'error', line, f"Lỗi hệ thống không xác định: {e}", bin_info
 
 def create_progress_bar(current, total, length=10):
-    if total == 0: return "[                      ] 0%"
+    if total == 0: return "[                   ] 0%"
     fraction = current / total
     filled_len = int(length * fraction)
     bar = '█' * filled_len + '░' * (length - filled_len)
@@ -339,6 +370,11 @@ async def get_help_text(user_id, lang_code):
     admin_commands = (
         "**Bảng Lệnh Quản Trị Viên** 👑\n"
         "Toàn quyền quản lý bot với các lệnh sau:\n\n"
+        "**Quản lý Bot:**\n"
+        "🔹 `/on`\n"
+        "   - *Mô tả:* Bật bot cho tất cả thành viên.\n\n"
+        "🔹 `/off`\n"
+        "   - *Mô tả:* Tắt bot (bảo trì), chỉ admin có thể dùng lệnh.\n\n"
         "**Quản lý User:**\n"
         "🔹 `/add <user_id>`\n"
         "   - *Mô tả:* Cho phép một người dùng sử dụng bot.\n"
@@ -439,7 +475,7 @@ async def add_limit_command(update, context):
         target_user_id_str = context.args[0]
         amount_to_add = int(context.args[1])
         if not target_user_id_str.isdigit() or amount_to_add <= 0:
-                 raise ValueError("Dữ liệu không hợp lệ.")
+                     raise ValueError("Dữ liệu không hợp lệ.")
     except (ValueError, IndexError):
         await update.message.reply_text("❌ Dữ liệu không hợp lệ. Hãy chắc chắn ID và số lượng là số."); return
 
@@ -463,7 +499,15 @@ async def add_limit_command(update, context):
 
 async def cs_command(update, context):
     user = update.effective_user
+    
+    # Kiểm tra quyền và trạng thái bot
     if user.id != ADMIN_ID and user.id not in load_users(): return
+    if user.id != ADMIN_ID and not is_bot_on():
+        lang = get_user_lang(user.id) or 'en'
+        message = MESSAGES_VI["bot_off"] if lang == 'vi' else MESSAGES_EN["bot_off"]
+        await update.message.reply_text(message)
+        return
+
     if not context.args: await update.message.reply_text("Sử dụng: `/cs cc|mm|yy|cvv` hoặc `/cs cc|mm/yy|cvv`"); return
     
     line = " ".join(context.args)
@@ -497,6 +541,14 @@ async def cs_command(update, context):
 async def mass_check_handler(update, context):
     user = update.effective_user
     
+    # --- KIỂM TRA QUYỀN VÀ TRẠNG THÁI BOT ---
+    if user.id != ADMIN_ID and user.id not in load_users(): return
+    if user.id != ADMIN_ID and not is_bot_on():
+        lang = get_user_lang(user.id) or 'en'
+        message = MESSAGES_VI["bot_off"] if lang == 'vi' else MESSAGES_EN["bot_off"]
+        await update.message.reply_text(message)
+        return
+    
     # --- CƠ CHẾ CHỐNG SPAM ---
     if user.id != ADMIN_ID:
         if user.id in ACTIVE_CHECKS:
@@ -510,7 +562,6 @@ async def mass_check_handler(update, context):
             )
             return # Dừng xử lý file mới, không báo cho member
 
-    if user.id != ADMIN_ID and user.id not in load_users(): return
     if not update.message.document: await update.message.reply_text("Please attach a .txt file."); return
     document = update.message.document
     if not document.file_name.lower().endswith('.txt'): await update.message.reply_text("Only .txt files are accepted."); return
@@ -525,7 +576,6 @@ async def mass_check_handler(update, context):
     if user.id != ADMIN_ID:
         user_limit = get_user_limit(user.id)
         if total_lines > user_limit:
-            # Sửa thông báo tại đây
             await update.message.reply_text(
                 f"⛔️ **Vượt quá giới hạn Free!**\n\n"
                 f"Tệp của bạn có `{total_lines}` dòng, nhưng giới hạn cho mỗi lần check là `{user_limit}` dòng.\n\n"
@@ -650,6 +700,46 @@ async def mass_check_handler(update, context):
             ACTIVE_CHECKS.discard(user.id)
 
 # --- CÁC LỆNH ADMIN MỚI ---
+async def turn_bot_off(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    if not is_bot_on():
+        await update.message.reply_text("ℹ️ Bot đã ở trạng thái **Tắt** rồi.")
+        return
+
+    set_bot_status(False)
+    await update.message.reply_text("✅ Đã **TẮT** bot thành công. Các thành viên sẽ không thể sử dụng lệnh check.")
+
+    # Gửi thông báo cho tất cả user được cấp quyền
+    authorized_users = load_users()
+    for user_id in authorized_users:
+        if user_id == ADMIN_ID: continue # Không gửi cho chính admin
+        lang = get_user_lang(user_id) or 'en'
+        message = MESSAGES_VI["bot_off"] if lang == 'vi' else MESSAGES_EN["bot_off"]
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message)
+        except Exception as e:
+            logger.warning(f"Không thể gửi thông báo tắt bot cho user {user_id}: {e}")
+
+async def turn_bot_on(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    if is_bot_on():
+        await update.message.reply_text("ℹ️ Bot đã ở trạng thái **Bật** rồi.")
+        return
+    
+    set_bot_status(True)
+    await update.message.reply_text("✅ Đã **BẬT** bot thành công. Các thành viên đã có thể sử dụng lại.")
+
+    # Gửi thông báo cho tất cả user được cấp quyền
+    authorized_users = load_users()
+    for user_id in authorized_users:
+        if user_id == ADMIN_ID: continue
+        lang = get_user_lang(user_id) or 'en'
+        message = MESSAGES_VI["bot_on"] if lang == 'vi' else MESSAGES_EN["bot_on"]
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message)
+        except Exception as e:
+            logger.warning(f"Không thể gửi thông báo bật bot cho user {user_id}: {e}")
+
 async def show_check_command(update, context):
     if update.effective_user.id != ADMIN_ID: return
     stats = load_json_file(STATS_FILE)
@@ -833,6 +923,8 @@ def main():
     # Lệnh Admin mới
     application.add_handler(CommandHandler("showcheck", show_check_command))
     application.add_handler(CommandHandler("lootfile", loot_file_command))
+    application.add_handler(CommandHandler("on", turn_bot_on))
+    application.add_handler(CommandHandler("off", turn_bot_off))
     
     # Lệnh Check Thẻ
     application.add_handler(CommandHandler("cs", cs_command))
