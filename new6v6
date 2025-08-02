@@ -144,7 +144,7 @@ def update_user_stats(user_id, user_info, counts):
     stats[user_id_str]['total_charged'] += counts.get('success', 0)
     stats[user_id_str]['total_custom'] += counts.get('custom', 0)
     stats[user_id_str]['total_decline'] += counts.get('decline', 0)
-    stats[user_id_str]['total_error'] += counts.get('error', 0)
+    stats[user_id_str]['total_error'] += counts.get('error', 0) + counts.get('gate_dead', 0) # Thêm gate_dead vào lỗi
     stats[user_id_str]['total_invalid'] += counts.get('invalid_format', 0)
     stats[user_id_str]['last_check_timestamp'] = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
     stats[user_id_str]['username'] = user_info.username
@@ -216,6 +216,9 @@ def _check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
 
         response_text = payment_response.text
 
+        if '{"message":"Forbidden"}' in response_text:
+            return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
+
         if '"payment_status":"succeeded"' in response_text: return 'success', line, response_text, bin_info
         elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
         elif '"action":{"action_type":"redirect","url":"https:\\/\\/hooks.stripe.com\\/3d_secure_2\\/hosted?merchant=' in response_text: return 'custom', line, response_text, bin_info
@@ -260,6 +263,9 @@ def _check_card_gate2(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
         if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment: {error}", bin_info
 
         response_text = payment_response.text
+
+        if '{"message":"Forbidden"}' in response_text:
+            return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
 
         if '"payment_status":"succeeded"' in response_text: return 'success', line, response_text, bin_info
         elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
@@ -365,6 +371,9 @@ def _check_card_gate3(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
         if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment: {error}", bin_info
 
         response_text = payment_response.text
+
+        if '{"message":"Forbidden"}' in response_text:
+            return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
 
         if '"payment_status":"succeeded"' in response_text: return 'success', line, response_text, bin_info
         elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
@@ -480,6 +489,9 @@ def _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
         if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment: {error}", bin_info
 
         response_text = payment_response.text
+
+        if '{"message":"Forbidden"}' in response_text:
+            return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
 
         if '"payment_status":"succeeded"' in response_text: return 'success', line, response_text, bin_info
         elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
@@ -916,6 +928,17 @@ async def cs_command(update, context):
         active_gate = get_active_gate()
         gate_name = f"Charge 0.5$ V{active_gate} Auth Api" if active_gate in ['2', '3', '4'] else "Charge 0.5$ Auth Api"
 
+        if status == 'gate_dead':
+            final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ GATE DIED**\n"
+                             f"**💬 Response:** `The payment gateway is currently down (Forbidden). Please contact the admin.`\n\n"
+                             f"**🏦 Gateway:** `{gate_name}`\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
+            await msg.edit_text(final_message)
+            return
+
         is_vn_decline = status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE'
         is_invalid_bin_decline = status == 'decline' and full_response == 'INVALID_BIN_DECLINE'
         is_expired_card_decline = status == 'decline' and full_response == 'EXPIRED_CARD_DECLINE'
@@ -923,36 +946,36 @@ async def cs_command(update, context):
 
         if is_invalid_bin_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                               f"**💳 Card:** `{original_line}`\n"
-                               f"**🚦 Status: ❌ DECLINED**\n"
-                               f"**💬 Response:** `Invalid Card Number (BIN not found)`\n\n"
-                               f"**🏦 Gateway:** `BIN Check`\n\n"
-                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                               f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `Invalid Card Number (BIN not found)`\n\n"
+                             f"**🏦 Gateway:** `BIN Check`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_invalid_cardnumber_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                               f"**💳 Card:** `{original_line}`\n"
-                               f"**🚦 Status: ❌ DECLINED**\n"
-                               f"**💬 Response:** `Invalid Card Number`\n\n"
-                               f"**🏦 Gateway:** `Datatrans Tokenize`\n\n"
-                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                               f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `Invalid Card Number`\n\n"
+                             f"**🏦 Gateway:** `Datatrans Tokenize`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_expired_card_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                               f"**💳 Card:** `{original_line}`\n"
-                               f"**🚦 Status: ❌ DECLINED**\n"
-                               f"**💬 Response:** `Card Expired`\n\n"
-                               f"**🏦 Gateway:** `Pre-Check`\n\n"
-                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                               f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `Card Expired`\n\n"
+                             f"**🏦 Gateway:** `Pre-Check`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_vn_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                               f"**💳 Card:** `{original_line}`\n"
-                               f"**🚦 Status: ❌ DECLINED**\n"
-                               f"**💬 Response:** `DECLINED (Vietnam BIN)`\n\n"
-                               f"**🏦 Gateway:** `{gate_name}`\n\n"
-                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                               f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `DECLINED (Vietnam BIN)`\n\n"
+                             f"**🏦 Gateway:** `{gate_name}`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         else:
             status_map = {
                 'success': ("✅ CHARGED 0.5$", "Transaction successful!"),
@@ -989,13 +1012,13 @@ async def cs_command(update, context):
                 response_display_part = f"**💬 Response:** `{response_message}`"
 
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                               f"**💳 Card:** `{original_line}`\n"
-                               f"**🚦 Status: {status_text}**\n"
-                               f"{response_display_part}\n\n"
-                               f"ℹ️ **BIN Info:**\n{bin_details_str}\n\n"
-                               f"**🏦 Gateway:** `{gate_name}`\n\n"
-                               f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                               f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: {status_text}**\n"
+                             f"{response_display_part}\n\n"
+                             f"ℹ️ **BIN Info:**\n{bin_details_str}\n\n"
+                             f"**🏦 Gateway:** `{gate_name}`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         
         await msg.edit_text(final_message)
         
@@ -1054,22 +1077,32 @@ async def multi_check_command(update, context):
         ACTIVE_CHECKS.add(user.id)
         CANCELLATION_EVENTS[user.id] = cancel_event
 
-        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0}
+        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0, 'gate_dead': 0}
         results = {k: [] for k in counts.keys()}
         processed_count = 0
         last_update_time = time.time()
         num_threads = min(10, total_lines) 
+        gate_died_flag = False
+        gate_fail_card = ""
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             future_to_line = {executor.submit(check_card, line, cancel_event): line for line in lines}
             for future in as_completed(future_to_line):
                 if cancel_event.is_set():
-                    counts['cancelled'] += 1
-                    continue
+                    break
 
                 processed_count += 1
                 try:
                     status, original_line, full_response, bin_info = future.result()
+                    
+                    if status == 'gate_dead':
+                        counts['gate_dead'] += 1
+                        gate_fail_card = original_line
+                        gate_died_flag = True
+                        cancel_event.set()
+                        # The loop will break on the next iteration due to the check at the top
+                        continue
+
                     counts[status] = counts.get(status, 0) + 1
                     status_icons = {'success': '✅', 'decline': '❌', 'custom': '🔒', 'invalid_format': '📋', 'error': '❗️', 'unknown': '❔', 'cancelled': '🛑'}
                     
@@ -1114,6 +1147,17 @@ async def multi_check_command(update, context):
                 
         duration = time.time() - start_time
         update_user_stats(user.id, user, counts)
+
+        if gate_died_flag:
+            await status_message.edit_text(
+                f"🛑 **CHECK STOPPED - GATE DIED** 🛑\n\n"
+                f"**Reason:** The gate is down (`Forbidden` error).\n"
+                f"The process was stopped immediately.\n\n"
+                f"**Gate Used:** `{gate_name}`\n"
+                f"**Failing Card:** `{gate_fail_card}`\n\n"
+                f"**Processed before stop:** `{processed_count}/{total_lines}`"
+            )
+            return
 
         if cancel_event.is_set():
             await status_message.edit_text(f"🛑 **Tác vụ đã được dừng theo yêu cầu.**\n\nĐã xử lý: {processed_count}/{total_lines} thẻ.")
@@ -1226,22 +1270,32 @@ async def mass_check_handler(update, context):
         ACTIVE_CHECKS.add(user.id)
         CANCELLATION_EVENTS[user.id] = cancel_event
 
-        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0}
+        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0, 'gate_dead': 0}
         result_lists = {k: [] for k in counts.keys()}
         result_lists['error_debug'] = []
         processed_count = 0
         last_update_time = time.time()
+        gate_died_flag = False
+        gate_fail_card = ""
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             future_to_line = {executor.submit(check_card, line, cancel_event): line for line in lines}
             for future in as_completed(future_to_line):
                 if cancel_event.is_set():
-                    counts['cancelled'] += 1
-                    continue
+                    break
 
                 processed_count += 1
                 try:
                     status, original_line, full_response, bin_info = future.result()
+                    
+                    if status == 'gate_dead':
+                        counts['gate_dead'] += 1
+                        gate_fail_card = original_line
+                        gate_died_flag = True
+                        cancel_event.set()
+                        result_lists['error'].append(f"{original_line} | GATE DIED (Forbidden)")
+                        continue
+                    
                     counts[status] = counts.get(status, 0) + 1
                     
                     line_to_save = ""
@@ -1273,13 +1327,13 @@ async def mass_check_handler(update, context):
                 if time.time() - last_update_time > 2.0 or processed_count == total_lines:
                     progress_bar = create_progress_bar(processed_count, total_lines, length=20)
                     status_text = (f"**🚀 Checking in progress...**\n{progress_bar}\n"
-                                     f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`\n"
-                                     f"**Progress:** `{processed_count}/{total_lines}`\n\n"
-                                     f"✅ **Charged:** `{counts['success']}`\n"
-                                     f"❌ **Declined:** `{counts['decline']}`\n"
-                                     f"🔒 **3D Secure:** `{counts['custom']}`\n"
-                                     f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
-                                     f"❔ **Errors:** `{counts['error']}`")
+                                   f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`\n"
+                                   f"**Progress:** `{processed_count}/{total_lines}`\n\n"
+                                   f"✅ **Charged:** `{counts['success']}`\n"
+                                   f"❌ **Declined:** `{counts['decline']}`\n"
+                                   f"🔒 **3D Secure:** `{counts['custom']}`\n"
+                                   f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
+                                   f"❔ **Errors:** `{counts['error']}`")
                     try: 
                         await status_message.edit_text(text=status_text)
                     except telegram.error.BadRequest as e:
@@ -1290,22 +1344,38 @@ async def mass_check_handler(update, context):
                     last_update_time = time.time()
                 
         duration = time.time() - start_time
-
-        if cancel_event.is_set():
-            await status_message.edit_text(f"🛑 **Tác vụ đã được dừng theo yêu cầu.**\n\nĐã xử lý: {processed_count}/{total_lines} thẻ. Kết quả đã xử lý sẽ được gửi đi.")
         
-        final_summary_text = (
-            f"**📊 Check Complete!**\n\n"
-            f"**Gate Used:** `{gate_name}`\n"
-            f"**Total:** `{total_lines}` | **Threads:** `{num_threads}`\n\n"
-            f"✅ **Charged:** `{counts['success']}`\n"
-            f"❌ **Declined:** `{counts['decline']}`\n"
-            f"🔒 **3D Secure:** `{counts['custom']}`\n"
-            f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
-            f"❔ **Errors:** `{counts['error']}`\n"
-            f"🛑 **Cancelled:** `{counts['cancelled']}`\n\n"
-            f"**⏱️ Took:** `{duration:.2f}s`"
-        )
+        # Cập nhật số thẻ đã hủy (nếu có)
+        counts['cancelled'] = total_lines - processed_count
+
+        if gate_died_flag:
+            final_summary_text = (
+                f"🛑 **CHECK STOPPED - GATE DIED** 🛑\n\n"
+                f"**Reason:** The gate is down (`Forbidden` error).\n"
+                f"The process was stopped immediately.\n\n"
+                f"**Gate Used:** `{gate_name}`\n"
+                f"**Failing Card:** `{gate_fail_card}`\n"
+                f"**Processed before stop:** `{processed_count}/{total_lines}`\n\n"
+                f"Các kết quả đã xử lý sẽ được gửi đi."
+            )
+        elif cancel_event.is_set():
+             final_summary_text = (
+                f"🛑 **Tác vụ đã được dừng theo yêu cầu.**\n\n"
+                f"Đã xử lý: {processed_count}/{total_lines} thẻ. Các kết quả đã xử lý sẽ được gửi đi."
+            )
+        else:
+            final_summary_text = (
+                f"**📊 Check Complete!**\n\n"
+                f"**Gate Used:** `{gate_name}`\n"
+                f"**Total:** `{total_lines}` | **Threads:** `{num_threads}`\n\n"
+                f"✅ **Charged:** `{counts['success']}`\n"
+                f"❌ **Declined:** `{counts['decline']}`\n"
+                f"🔒 **3D Secure:** `{counts['custom']}`\n"
+                f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
+                f"❔ **Errors:** `{counts['error']}`\n"
+                f"🛑 **Cancelled:** `{counts['cancelled']}`\n\n"
+                f"**⏱️ Took:** `{duration:.2f}s`"
+            )
         
         await status_message.edit_text(final_summary_text)
 
@@ -1377,20 +1447,22 @@ def _perform_gate_check(gate_id: str, card_line: str):
         bin_info = {} 
 
         if gate_id == '1':
-            _, _, response_text, _ = _check_card_gate1(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
+            status, _, response_text, _ = _check_card_gate1(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
         elif gate_id == '2':
-            _, _, response_text, _ = _check_card_gate2(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
+            status, _, response_text, _ = _check_card_gate2(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
         elif gate_id == '3':
-            _, _, response_text, _ = _check_card_gate3(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
+            status, _, response_text, _ = _check_card_gate3(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
         elif gate_id == '4':
-            _, _, response_text, _ = _check_card_gate4(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
+            status, _, response_text, _ = _check_card_gate4(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
         else:
             return "Không xác định ❓", "Gate ID không tồn tại"
 
         # Phân tích kết quả
-        if '{"message":"Forbidden"}' in response_text:
+        if status == 'gate_dead':
+             return "Không hoạt động 🔴", response_text
+        elif '{"message":"Forbidden"}' in str(response_text):
             return "Không hoạt động 🔴", response_text
-        elif '"payment_status":"failed"' in response_text:
+        elif '"payment_status":"failed"' in str(response_text):
             return "Hoạt động 🟢", response_text
         else:
             # Bất kỳ phản hồi nào khác từ server đều có nghĩa là nó online
@@ -1417,10 +1489,10 @@ async def status_command(update, context):
 
 
     # Cắt bớt response nếu quá dài để hiển thị đẹp hơn
-    response1_display = response1[:1000]
-    response2_display = response2[:1000]
-    response3_display = response3[:1000]
-    response4_display = response4[:1000]
+    response1_display = str(response1)[:1000]
+    response2_display = str(response2)[:1000]
+    response3_display = str(response3)[:1000]
+    response4_display = str(response4)[:1000]
 
     final_message = (
         f"**📊 TRẠNG THÁI CỔNG THANH TOÁN 📊**\n\n"
