@@ -177,7 +177,7 @@ def get_formatted_gate_name(gate_id):
             else:
                 return f"Charge {min_val:.2f}$-{max_val:.2f}$ (Gate {gate_id})"
         except (ValueError, TypeError):
-             return default_names.get(gate_id, f"Unknown Gate {gate_id}")
+            return default_names.get(gate_id, f"Unknown Gate {gate_id}")
     else:
         return default_names.get(gate_id, f"Unknown Gate {gate_id}")
 
@@ -858,22 +858,17 @@ def _check_card_gate7(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
 
         response_text = payment_response.text
 
-        # --- LOGIC MỚI DỰA TRÊN KEYCHECK ---
-
+        # --- LOGIC ĐÃ SỬA: Chỉ trả về Live hoặc Decline ---
         if '{"message":"Forbidden"}' in response_text:
             return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
 
-        # KEYCHAIN Success: Card is Live (Approved). Sẽ không trả về 'custom'.
+        # KEYCHAIN Success: Bất kỳ phản hồi nào chứa "3d_secure_2" được coi là thẻ Live.
         if '"3d_secure_2"' in response_text:
             return 'live_success', line, 'Card is Live (Approved)', bin_info
-
-        # KEYCHAIN Failure: Card is Declined.
-        elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text:
-            return 'decline', line, response_text, bin_info
-
-        # Response không khớp key nào -> Gửi cho Admin để review.
+        # KEYCHAIN Failure: Tất cả các trường hợp còn lại được coi là Declined.
+        # Điều này bao gồm các lỗi "payment_status":"failed", lỗi mạng, và các phản hồi không xác định khác (tránh trạng thái UNKNOWN).
         else:
-            return 'unknown', line, response_text, bin_info
+            return 'decline', line, response_text, bin_info
 
     except Exception as e:
         logger.error(f"Lỗi không xác định trong Gate 7 cho line '{line}': {e}", exc_info=True)
@@ -1297,8 +1292,8 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
         gate_name = get_formatted_gate_name(active_gate)
         # Nếu là lệnh charge tùy chỉnh, ghi đè tên cổng
         if custom_charge_amount is not None:
-             amount_in_usd = custom_charge_amount / 100.0
-             gate_name = f"Custom Charge {amount_in_usd:.2f}$ (Gate {active_gate})"
+            amount_in_usd = custom_charge_amount / 100.0
+            gate_name = f"Custom Charge {amount_in_usd:.2f}$ (Gate {active_gate})"
 
 
         if status == 'gate_dead':
@@ -1389,8 +1384,8 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
             )
             
             response_display_part = ""
-            if status in ['invalid_format', 'error', 'unknown']:
-                safe_response = str(response_message)[:1000] 
+            if status in ['invalid_format', 'error', 'unknown', 'decline']:
+                safe_response = str(response_message if status != 'decline' else full_response)[:1000] 
                 response_display_part = f"**💬 Response:**\n```\n{safe_response}\n```"
             else:
                 response_display_part = f"**💬 Response:** `{response_message}`"
@@ -2156,17 +2151,17 @@ async def show_check_command(update, context):
             username = data.get('username')
             user_display = f"@{escape_markdown(str(username))}" if username else f"ID: {user_id_str}"
             message += (f"👤 **{user_display}** (`{user_id_str}`)\n"
-                          f"  ✅ Charged: `{data.get('total_charged', 0)}`\n"
-                          f"  ✅ Approved: `{data.get('total_live_success', 0)}`\n"
-                          f"  🔒 Custom: `{data.get('total_custom', 0)}`\n"
-                          f"  ❌ Declined: `{data.get('total_decline', 0)}`\n"
-                          f"  ❔ Lỗi: `{data.get('total_error', 0) + data.get('total_invalid', 0)}`\n"
-                          f"  🕒 Lần cuối: `{data.get('last_check_timestamp', 'Chưa check')}`\n"
-                          f"--------------------\n")
+                        f"  ✅ Charged: `{data.get('total_charged', 0)}`\n"
+                        f"  ✅ Approved: `{data.get('total_live_success', 0)}`\n"
+                        f"  🔒 Custom: `{data.get('total_custom', 0)}`\n"
+                        f"  ❌ Declined: `{data.get('total_decline', 0)}`\n"
+                        f"  ❔ Lỗi: `{data.get('total_error', 0) + data.get('total_invalid', 0)}`\n"
+                        f"  🕒 Lần cuối: `{data.get('last_check_timestamp', 'Chưa check')}`\n"
+                        f"--------------------\n")
         else:
             message += (f"👤 **ID: {user_id_str}**\n"
-                          f"  *Chưa từng check hoặc dữ liệu lỗi.*\n"
-                          f"--------------------\n")
+                        f"  *Chưa từng check hoặc dữ liệu lỗi.*\n"
+                        f"--------------------\n")
     
     if len(message) > 4096:
         with io.BytesIO(message.encode('utf-8')) as doc:
