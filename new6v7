@@ -1563,7 +1563,7 @@ async def multi_check_command(update, context):
                         elif full_response == 'INVALID_CARDNUMBER_DECLINE': result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid Card Number)`"
                         else: result_line = f"{status_icons['decline']} `{original_line}`"
                     elif status == 'live_success':
-                        result_line = f"✅ `{original_line}` | Approved"
+                        result_line = f" `{original_line}` | Approved✅"
                     elif status == 'invalid_format': result_line = f"{status_icons[status]} `{original_line}` | Lý do: {str(full_response)[:50]}" 
                     elif status == 'cancelled': continue
                     else:
@@ -1787,7 +1787,7 @@ async def mass_check_handler(update, context):
                         elif full_response == 'INVALID_CARDNUMBER_DECLINE': line_to_save = f"{original_line} | DECLINED (Invalid Card Number)"
                         else: line_to_save = f"{original_line} | DECLINED"
                     elif status == 'live_success':
-                        line_to_save = f"{original_line} | APPROVED"
+                        line_to_save = f"{original_line} | APPROVED✅"
                     elif status == 'invalid_format': line_to_save = f"{original_line} | Reason: {full_response}"
                     elif status == 'cancelled': continue
                     else:
