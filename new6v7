@@ -155,6 +155,10 @@ def _get_charge_value(gate_id, custom_charge_amount=None):
 
 def get_formatted_gate_name(gate_id):
     """Lấy tên gate đã được định dạng với thông tin charge."""
+    # Gate 7 luôn có một tên cố định và không hiển thị thông tin charge
+    if str(gate_id) == '7':
+        return "Check Live (Gate 7)"
+
     default_names = {
         '1': "Charge 0.5$ (Gate 1)",
         '2': "Charge 0.5$ V2 (Gate 2)",
@@ -162,7 +166,6 @@ def get_formatted_gate_name(gate_id):
         '4': "Charge 0.5$ V4 (Gate 4)",
         '5': "Charge 0.5$-2.0$ (Gate 5)",
         '6': "Charge 0.5$ (Gate 6)",
-        '7': "Check Live (Gate 7)"
     }
     
     ranges = load_json_file(GATE_RANGES_FILE)
@@ -180,6 +183,7 @@ def get_formatted_gate_name(gate_id):
             return default_names.get(gate_id, f"Unknown Gate {gate_id}")
     else:
         return default_names.get(gate_id, f"Unknown Gate {gate_id}")
+
 
 def update_user_stats(user_id, user_info, counts):
     # Sử dụng lock để đảm bảo an toàn khi nhiều luồng cùng cập nhật file
@@ -800,10 +804,9 @@ def _check_card_gate6(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
 
 def _check_card_gate7(session, line, cc, mes, ano, cvv, bin_info, ua, cancellation_event, custom_charge_amount=None):
     """
-    Logic cho Gate 7 - Check Live.
-    - Sửa đổi: Chỉ trả về 'live_success' hoặc 'decline'.
-    - 'live_success' được xác định khi API yêu cầu chuyển hướng 3D Secure.
-    - Tất cả các trường hợp khác (failed, error, unknown) đều được coi là 'decline'.
+    Logic cho Gate 7 - Check Live (Không charge).
+    - Trả về 'live_success' nếu thẻ yêu cầu 3D Secure.
+    - Các trường hợp khác (failed, error, unknown) được coi là 'decline'.
     """
     try:
         # Step 1: Tokenize card
@@ -863,18 +866,14 @@ def _check_card_gate7(session, line, cc, mes, ano, cvv, bin_info, ua, cancellati
 
         response_text = payment_response.text
 
-        # --- LOGIC MỚI CHO GATE 7 THEO YÊU CẦU (KEYCHECK) ---
         if '{"message":"Forbidden"}' in response_text:
             return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
 
-        # KEYCHAIN Success OR: "payment_source_status":"pending"
-        # Trạng thái này tương ứng với thẻ Live/Approved cần xác thực 3DS.
+        # Thẻ Live/Approved khi API yêu cầu xác thực 3DS.
         if '"payment_source_status":"pending"' in response_text:
             return 'live_success', line, response_text, bin_info
         
-        # KEYCHAIN Failure OR: "payment_status":"failed" hoặc "payment_source_status":"failed"
-        # Bất kỳ trường hợp nào khác không phải là 'pending' sẽ được coi là Decline.
-        # Logic này bao hàm cả các trường hợp 'failed' một cách an toàn.
+        # Bất kỳ trường hợp nào khác không phải 'pending' sẽ được coi là Decline.
         else:
             return 'decline', line, response_text, bin_info
 
@@ -1204,10 +1203,10 @@ async def add_limit_command(update, context):
     save_json_file(LIMIT_FILE, limits)
     
     await update.message.reply_text(f"✅ **Cập nhật giới hạn /mass thành công!**\n\n"
-                                        f"👤 **User ID:** `{target_user_id_str}`\n"
-                                        f"📈 **Giới hạn cũ:** `{old_limit}`\n"
-                                        f"➕ **Đã thêm:** `{amount_to_add}`\n"
-                                        f"📊 **Tổng mới:** `{new_limit}`")
+                                    f"👤 **User ID:** `{target_user_id_str}`\n"
+                                    f"📈 **Giới hạn cũ:** `{old_limit}`\n"
+                                    f"➕ **Đã thêm:** `{amount_to_add}`\n"
+                                    f"📊 **Tổng mới:** `{new_limit}`")
 
 async def add_multi_limit_command(update, context):
     if update.effective_user.id != ADMIN_ID: return
@@ -1228,10 +1227,10 @@ async def add_multi_limit_command(update, context):
     save_json_file(MULTI_LIMIT_FILE, limits)
     
     await update.message.reply_text(f"✅ **Cập nhật giới hạn /multi thành công!**\n\n"
-                                        f"👤 **User ID:** `{target_user_id_str}`\n"
-                                        f"📈 **Giới hạn cũ:** `{old_limit}`\n"
-                                        f"➕ **Đã thêm:** `{amount_to_add}`\n"
-                                        f"📊 **Tổng mới:** `{new_limit}`")
+                                    f"👤 **User ID:** `{target_user_id_str}`\n"
+                                    f"📈 **Giới hạn cũ:** `{old_limit}`\n"
+                                    f"➕ **Đã thêm:** `{amount_to_add}`\n"
+                                    f"📊 **Tổng mới:** `{new_limit}`")
 
 async def bin_command(update, context):
     user = update.effective_user
@@ -1303,15 +1302,14 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
             amount_in_usd = custom_charge_amount / 100.0
             gate_name = f"Custom Charge {amount_in_usd:.2f}$ (Gate {active_gate})"
 
-
         if status == 'gate_dead':
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: ❌ GATE DIED**\n"
-                                f"**💬 Response:** `The payment gateway is currently down (Forbidden). Please contact the admin.`\n\n"
-                                f"**🏦 Gateway:** `{gate_name}`\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ GATE DIED**\n"
+                             f"**💬 Response:** `The payment gateway is currently down (Forbidden). Please contact the admin.`\n\n"
+                             f"**🏦 Gateway:** `{gate_name}`\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
             await msg.edit_text(final_message)
             return
 
@@ -1322,58 +1320,67 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
 
         if is_invalid_bin_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: ❌ DECLINED**\n"
-                                f"**💬 Response:** `Invalid Card Number (BIN not found)`\n\n"
-                                f"**🏦 Gateway:** `BIN Check`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `Invalid Card Number (BIN not found)`\n\n"
+                             f"**🏦 Gateway:** `BIN Check`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_invalid_cardnumber_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: ❌ DECLINED**\n"
-                                f"**💬 Response:** `Invalid Card Number`\n\n"
-                                f"**🏦 Gateway:** `Datatrans Tokenize`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `Invalid Card Number`\n\n"
+                             f"**🏦 Gateway:** `Datatrans Tokenize`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_expired_card_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: ❌ DECLINED**\n"
-                                f"**💬 Response:** `Card Expired`\n\n"
-                                f"**🏦 Gateway:** `Pre-Check`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `Card Expired`\n\n"
+                             f"**🏦 Gateway:** `Pre-Check`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         elif is_vn_decline:
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: ❌ DECLINED**\n"
-                                f"**💬 Response:** `DECLINED (Vietnam BIN)`\n\n"
-                                f"**🏦 Gateway:** `{gate_name}`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: ❌ DECLINED**\n"
+                             f"**💬 Response:** `DECLINED (Vietnam BIN)`\n\n"
+                             f"**🏦 Gateway:** `{gate_name}`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         else:
+            status_text = ""
+            response_message = ""
+            
+            # Default status mapping for errors and complex cases
             status_map = {
-                'success': ("✅ CHARGED", "Transaction successful!"),
-                'live_success': ("✅ Approved", "Card is Live (3DSecure Required)"),
-                'decline': ("❌ DECLINED", "Transaction declined by issuing bank."),
-                'custom': ("🔒 3D SECURE", "3D Secure authentication required."),
+                'custom': ("🔒 3D SECURE", full_response),
                 'invalid_format': ("📋 FORMAT ERROR", full_response),
                 'error': ("❗️ ERROR", full_response),
-                'unknown': ("❔ UNKNOWN", "Could not determine card status."),
+                'unknown': ("❔ UNKNOWN", full_response),
             }
-            status_text, response_message = status_map.get(status, status_map['unknown'])
 
-            if status == 'success' and full_response.startswith('CHARGED_'):
+            # Determine status text and simple response message
+            if status == 'live_success':
+                status_text = "✅ Approved"
+                response_message = "Card Added Successfully 💳"
+            elif status == 'decline':
+                status_text = "❌ DECLINED"
+                response_message = "Card Declined"
+            elif status == 'success':
                 try:
                     amount_charged_raw = int(full_response.split('_')[1])
                     amount_in_usd = amount_charged_raw / 100.0
                     status_text = f"✅ CHARGED {amount_in_usd:.2f}$"
-                    response_message = f"Transaction successful for {amount_in_usd:.2f}."
+                    response_message = f"Transaction successful for {amount_in_usd:.2f}$."
                 except (ValueError, IndexError):
                     status_text = "✅ CHARGED"
                     response_message = "Transaction successful!"
-            
+            else:
+                status_text, response_message = status_map.get(status, status_map['unknown'])
+
             brand = (bin_info.get('brand') or 'N/A').upper()
             card_type = (bin_info.get('type') or 'N/A').upper()
             level = (bin_info.get('level') or 'N/A').upper()
@@ -1392,25 +1399,22 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
             )
             
             response_display_part = ""
-            # For decline, live_success on gate 7, and errors, show the full JSON/error response
-            if status in ['decline', 'live_success', 'invalid_format', 'error', 'unknown']:
-                # For live_success, we show the full_response which is the JSON
-                # For decline, we also show the full_response
-                # For others, response_message is already the full_response
-                response_to_display = full_response if status in ['decline', 'live_success'] else response_message
-                safe_response = str(response_to_display)[:1000]
+            # Only show full JSON/error for specific cases
+            if status in ['custom', 'invalid_format', 'error', 'unknown']:
+                safe_response = str(response_message)[:1000]
                 response_display_part = f"**💬 Response:**\n```json\n{safe_response}\n```"
             else:
+                # For success, live_success, decline, show the simple message
                 response_display_part = f"**💬 Response:** `{response_message}`"
 
             final_message = (f"**💠 CARD CHECK RESULT 💠**\n\n"
-                                f"**💳 Card:** `{original_line}`\n"
-                                f"**🚦 Status: {status_text}**\n"
-                                f"{response_display_part}\n\n"
-                                f"ℹ️ **BIN Info:**\n{bin_details_str}\n\n"
-                                f"**🏦 Gateway:** `{gate_name}`\n\n"
-                                f"**⏱️ Took:** `{duration:.2f}s`\n\n"
-                                f"👤 *Checker by: {ADMIN_USERNAME}*")
+                             f"**💳 Card:** `{original_line}`\n"
+                             f"**🚦 Status: {status_text}**\n"
+                             f"{response_display_part}\n\n"
+                             f"ℹ️ **BIN Info:**\n{bin_details_str}\n\n"
+                             f"**🏦 Gateway:** `{gate_name}`\n\n"
+                             f"**⏱️ Took:** `{duration:.2f}s`\n\n"
+                             f"👤 *Checker by: {ADMIN_USERNAME}*")
         
         await msg.edit_text(final_message)
         
@@ -1559,7 +1563,7 @@ async def multi_check_command(update, context):
                         elif full_response == 'INVALID_CARDNUMBER_DECLINE': result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid Card Number)`"
                         else: result_line = f"{status_icons['decline']} `{original_line}`"
                     elif status == 'live_success':
-                        result_line = f"✅ `{original_line}` | Approved (3DSecure)"
+                        result_line = f"✅ `{original_line}` | Approved"
                     elif status == 'invalid_format': result_line = f"{status_icons[status]} `{original_line}` | Lý do: {str(full_response)[:50]}" 
                     elif status == 'cancelled': continue
                     else:
@@ -1576,15 +1580,22 @@ async def multi_check_command(update, context):
 
                 if time.time() - last_update_time > 2.0 or processed_count == total_lines:
                     progress_bar = create_progress_bar(processed_count, total_lines, length=20)
-                    status_text = (
-                        f"**🚀 Checking in progress...**\n{progress_bar}\n"
-                        f"**Gate:** `{gate_name}`\n"
-                        f"**Progress:** `{processed_count}/{total_lines}`\n\n"
-                        f"✅ **Charged:** `{counts['success']}`\n"
-                        f"✅ **Approved (Live):** `{counts['live_success']}`\n"
-                        f"❌ **Declined:** `{counts['decline']}`\n"
+                    
+                    status_lines = [
+                        f"**🚀 Checking in progress...**\n{progress_bar}\n",
+                        f"**Gate:** `{gate_name}`",
+                        f"**Progress:** `{processed_count}/{total_lines}`\n"
+                    ]
+                    if active_gate != '7':
+                        status_lines.append(f"✅ **Charged:** `{counts['success']}`")
+                    
+                    status_lines.extend([
+                        f"✅ **Approved:** `{counts['live_success']}`",
+                        f"❌ **Declined:** `{counts['decline']}`",
                         f"🔒 **3D Secure:** `{counts['custom']}` | ❔ **Errors:** `{counts['error']}`"
-                    )
+                    ])
+                    status_text = "\n".join(status_lines)
+
                     try:
                         # Chỉ gửi kèm nút bấm nếu task chưa bị hủy
                         current_reply_markup = reply_markup if not cancel_event.is_set() else None
@@ -1615,22 +1626,30 @@ async def multi_check_command(update, context):
             await status_message.edit_text(f"🛑 **Tác vụ đã được dừng theo yêu cầu.**\n\nĐã xử lý: {processed_count}/{total_lines} thẻ.", reply_markup=None)
             return
 
-        final_message = [
+        final_header = [
             f"**📊 Check Complete!**\n",
             f"**Gate Used:** `{gate_name}`",
             f"**Total Cards:** `{total_lines}`",
             f"**Time Taken:** `{duration:.2f}s`\n",
-            f"✅ **Charged:** `{counts['success']}`",
-            f"✅ **Approved (Live):** `{counts['live_success']}`",
+        ]
+
+        final_counts = []
+        if active_gate != '7':
+            final_counts.append(f"✅ **Charged:** `{counts['success']}`")
+        
+        final_counts.extend([
+            f"✅ **Approved:** `{counts['live_success']}`",
             f"❌ **Declined:** `{counts['decline']}`",
             f"🔒 **3D Secure:** `{counts['custom']}`",
             f"📋 **Invalid Format:** `{counts['invalid_format']}`",
             f"❗️ **Errors:** `{counts['error']}`\n",
             f"-----------------------------------------"
-        ]
+        ])
 
-        if results['live_success']: final_message.extend(("\n**✅ APPROVED (LIVE):**", *results['live_success']))
-        if results['success']: final_message.extend(("\n**✅ CHARGED CARDS:**", *results['success']))
+        final_message = final_header + final_counts
+        
+        if results['live_success']: final_message.extend(("\n**✅ APPROVED:**", *results['live_success']))
+        if results['success'] and active_gate != '7': final_message.extend(("\n**✅ CHARGED CARDS:**", *results['success']))
         if results['custom']: final_message.extend(("\n**🔒 3D SECURE CARDS:**", *results['custom']))
         if results['decline']: final_message.extend(("\n**❌ DECLINED CARDS:**", *results['decline']))
         if results['invalid_format']: final_message.extend(("\n**📋 INVALID FORMAT:**", *results['invalid_format']))
@@ -1704,7 +1723,8 @@ async def mass_check_handler(update, context):
                 quote=True
             )
     else:
-        num_threads = min(requested_threads, 50)
+        # Admin không có giới hạn luồng
+        num_threads = requested_threads
 
     num_threads = max(1, num_threads)
 
@@ -1767,7 +1787,7 @@ async def mass_check_handler(update, context):
                         elif full_response == 'INVALID_CARDNUMBER_DECLINE': line_to_save = f"{original_line} | DECLINED (Invalid Card Number)"
                         else: line_to_save = f"{original_line} | DECLINED"
                     elif status == 'live_success':
-                        line_to_save = f"{original_line} | APPROVED (3DSecure)"
+                        line_to_save = f"{original_line} | APPROVED"
                     elif status == 'invalid_format': line_to_save = f"{original_line} | Reason: {full_response}"
                     elif status == 'cancelled': continue
                     else:
@@ -1789,15 +1809,24 @@ async def mass_check_handler(update, context):
 
                 if time.time() - last_update_time > 2.0 or processed_count == total_lines:
                     progress_bar = create_progress_bar(processed_count, total_lines, length=20)
-                    status_text = (f"**🚀 Checking in progress...**\n{progress_bar}\n"
-                                    f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`\n"
-                                    f"**Progress:** `{processed_count}/{total_lines}`\n\n"
-                                    f"✅ **Charged:** `{counts['success']}`\n"
-                                    f"✅ **Approved (Live):** `{counts['live_success']}`\n"
-                                    f"❌ **Declined:** `{counts['decline']}`\n"
-                                    f"🔒 **3D Secure:** `{counts['custom']}`\n"
-                                    f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
-                                    f"❔ **Errors:** `{counts['error']}`")
+                    
+                    status_lines = [
+                        f"**🚀 Checking in progress...**\n{progress_bar}\n",
+                        f"**Gate:** `{gate_name}` | **Threads:** `{num_threads}`",
+                        f"**Progress:** `{processed_count}/{total_lines}`\n"
+                    ]
+                    if active_gate != '7':
+                        status_lines.append(f"✅ **Charged:** `{counts['success']}`")
+                    
+                    status_lines.extend([
+                        f"✅ **Approved:** `{counts['live_success']}`",
+                        f"❌ **Declined:** `{counts['decline']}`",
+                        f"🔒 **3D Secure:** `{counts['custom']}`",
+                        f"📋 **Invalid Format:** `{counts['invalid_format']}`",
+                        f"❔ **Errors:** `{counts['error']}`"
+                    ])
+                    status_text = "\n".join(status_lines)
+
                     try: 
                         current_reply_markup = reply_markup if not cancel_event.is_set() else None
                         await status_message.edit_text(text=status_text, reply_markup=current_reply_markup)
@@ -1828,19 +1857,24 @@ async def mass_check_handler(update, context):
                 f"Đã xử lý: {processed_count}/{total_lines} thẻ. Các kết quả đã xử lý sẽ được gửi đi."
             )
         else:
-            final_summary_text = (
-                f"**📊 Check Complete!**\n\n"
-                f"**Gate Used:** `{gate_name}`\n"
-                f"**Total:** `{total_lines}` | **Threads:** `{num_threads}`\n\n"
-                f"✅ **Charged:** `{counts['success']}`\n"
-                f"✅ **Approved (Live):** `{counts['live_success']}`\n"
-                f"❌ **Declined:** `{counts['decline']}`\n"
-                f"🔒 **3D Secure:** `{counts['custom']}`\n"
-                f"📋 **Invalid Format:** `{counts['invalid_format']}`\n"
-                f"❔ **Errors:** `{counts['error']}`\n"
-                f"🛑 **Cancelled:** `{counts['cancelled']}`\n\n"
+            summary_lines = [
+                f"**📊 Check Complete!**\n",
+                f"**Gate Used:** `{gate_name}`",
+                f"**Total:** `{total_lines}` | **Threads:** `{num_threads}`\n"
+            ]
+            if active_gate != '7':
+                summary_lines.append(f"✅ **Charged:** `{counts['success']}`")
+            
+            summary_lines.extend([
+                f"✅ **Approved:** `{counts['live_success']}`",
+                f"❌ **Declined:** `{counts['decline']}`",
+                f"🔒 **3D Secure:** `{counts['custom']}`",
+                f"📋 **Invalid Format:** `{counts['invalid_format']}`",
+                f"❔ **Errors:** `{counts['error']}`",
+                f"🛑 **Cancelled:** `{counts['cancelled']}`\n",
                 f"**⏱️ Took:** `{duration:.2f}s`"
-            )
+            ])
+            final_summary_text = "\n".join(summary_lines)
         
         await status_message.edit_text(final_summary_text, reply_markup=None)
 
@@ -1850,7 +1884,7 @@ async def mass_check_handler(update, context):
         update_user_stats(user.id, user, counts)
 
         file_map = {
-            'success': 'charged.txt', 'live_success': 'live_approved.txt', 'decline': 'declined.txt',
+            'success': 'charged.txt', 'live_success': 'approved.txt', 'decline': 'declined.txt',
             'custom': '3d_secure.txt', 'invalid_format': 'invalid_format.txt',
             'error': 'errors.txt', 'unknown': 'unknown.txt'
         }
