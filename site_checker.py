@@ -1,21 +1,60 @@
-# Tên file: site_checker.py
-import requests
-import re
-import ssl
-import socket
-import time
+import asyncio
+import json
 import logging
+import os
+import re
+import socket
+import ssl
+import time
 from urllib.parse import urlparse
-from flask import Flask, request, jsonify
 
-# --- CẤU HÌNH ---
-# Tắt bớt log của Flask để console sạch hơn
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
+import requests
+from telegram import User
+from telegram.helpers import escape_markdown
 
-app = Flask(__name__)
+# --- CẤU HÌNH & HẰNG SỐ (SAO CHÉP TỪ FILE CHÍNH ĐỂ HOẠT ĐỘNG ĐỘC LẬP) ---
+# Đây là những cấu hình cần thiết để các lệnh /site, /sitem hoạt động
+ADMIN_ID = 5127429005
+ADMIN_USERNAME = "@startsuttdow"
+USER_FILE = "authorized_users.txt"
+BOT_STATUS_FILE = "bot_status.json"
+PREFS_FILE = "user_prefs.json"
+MESSAGES_VI = {
+    "bot_off": "🔴 **THÔNG BÁO BẢO TRÌ** 🔴\n\nBot hiện đang tạm thời ngoại tuyến để bảo trì. Các lệnh check sẽ không hoạt động cho đến khi có thông báo mới. Cảm ơn sự kiên nhẫn của bạn!",
+}
+MESSAGES_EN = {
+    "bot_off": "🔴 **MAINTENANCE NOTICE** 🔴\n\nBot is temporarily offline for maintenance. Checking commands will be disabled until further notice. Thank you for your patience!",
+}
 
-# --- CẤU HÌNH CHO SITE CHECKER ---
+# Cấu hình logging riêng cho module này
+logger = logging.getLogger(__name__)
+
+# --- CÁC HÀM TIỆN ÍCH (SAO CHÉP TỪ FILE CHÍNH) ---
+def load_json_file(filename, default_data={}):
+    if not os.path.exists(filename):
+        return default_data
+    try:
+        with open(filename, "r", encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return default_data
+
+def load_users():
+    try:
+        with open(USER_FILE, "r") as f:
+            return {int(line.strip()) for line in f if line.strip().isdigit()}
+    except FileNotFoundError:
+        return set()
+
+def is_bot_on():
+    status = load_json_file(BOT_STATUS_FILE, default_data={'is_on': True})
+    return status.get('is_on', True)
+
+def get_user_lang(user_id):
+    prefs = load_json_file(PREFS_FILE)
+    return prefs.get(str(user_id), 'en') # Mặc định là tiếng Anh
+
+# --- CẤU HÌNH RIÊNG CHO SITE CHECKER ---
 # Danh sách Payment Gateways
 GATEWAYS_LIST = [
     "PayPal", "Stripe", "Braintree", "Square", "Cybersource", "lemon-squeezy",
@@ -86,14 +125,7 @@ SECURITY_PATTERNS = {
     'GraphQL': r'graphql|__schema|query\s*{',
 }
 
-# --- CÁC HÀM CHO SITE CHECKER ---
-def escape_markdown(text: str) -> str:
-    """Hàm helper để escape các ký tự Markdown V2."""
-    if not text:
-        return ""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
-
+# --- CÁC HÀM CỐT LÕI CỦA SITE CHECKER ---
 def normalize_url(url: str) -> str | None:
     """Chuẩn hóa URL, thêm scheme nếu thiếu."""
     if not re.match(r"^(?:f|ht)tps?://", url, re.IGNORECASE):
@@ -112,35 +144,57 @@ def find_captcha_details(response_text: str) -> list[str]:
     """Tìm chi tiết về các loại CAPTCHA."""
     captcha_details = []
     if "recaptcha" in response_text.lower():
-        if "recaptcha v1" in response_text.lower(): captcha_details.append("reCAPTCHA v1")
-        if "recaptcha v2" in response_text.lower(): captcha_details.append("reCAPTCHA v2")
-        if "recaptcha v3" in response_text.lower(): captcha_details.append("reCAPTCHA v3")
-        if "recaptcha enterprise" in response_text.lower(): captcha_details.append("reCAPTCHA Enterprise")
-    if "hcaptcha" in response_text.lower(): captcha_details.append("hCaptcha")
-    if "funcaptcha" in response_text.lower(): captcha_details.append("FunCAPTCHA")
-    if "arkoselabs" in response_text.lower(): captcha_details.append("Arkose Labs")
+        if "recaptcha v1" in response_text.lower():
+            captcha_details.append("reCAPTCHA v1")
+        if "recaptcha v2" in response_text.lower():
+            captcha_details.append("reCAPTCHA v2")
+        if "recaptcha v3" in response_text.lower():
+            captcha_details.append("reCAPTCHA v3")
+        if "recaptcha enterprise" in response_text.lower():
+            captcha_details.append("reCAPTCHA Enterprise")
+    if "hcaptcha" in response_text.lower():
+        captcha_details.append("hCaptcha")
+    if "funcaptcha" in response_text.lower():
+        captcha_details.append("FunCAPTCHA")
+    if "arkoselabs" in response_text.lower():
+        captcha_details.append("Arkose Labs")
+    
     return captcha_details or ["No CAPTCHA services detected"]
 
 def find_cloudflare_services(response_text: str) -> list[str]:
     """Tìm các dịch vụ bảo mật của Cloudflare."""
     services = []
-    if "cloudflare turnstile" in response_text.lower(): services.append("Cloudflare Turnstile")
-    if "ddos protection" in response_text.lower(): services.append("DDoS Protection")
-    if "web application firewall" in response_text.lower(): services.append("Web Application Firewall (WAF)")
-    if "rate limiting" in response_text.lower(): services.append("Rate Limiting")
-    if "bot management" in response_text.lower(): services.append("Bot Management")
-    if "ssl/tls encryption" in response_text.lower(): services.append("SSL/TLS Encryption")
-    if "zero trust security" in response_text.lower(): services.append("Zero Trust Security")
+    if "cloudflare turnstile" in response_text.lower():
+        services.append("Cloudflare Turnstile")
+    if "ddos protection" in response_text.lower():
+        services.append("DDoS Protection")
+    if "web application firewall" in response_text.lower():
+        services.append("Web Application Firewall (WAF)")
+    if "rate limiting" in response_text.lower():
+        services.append("Rate Limiting")
+    if "bot management" in response_text.lower():
+        services.append("Bot Management")
+    if "ssl/tls encryption" in response_text.lower():
+        services.append("SSL/TLS Encryption")
+    if "zero trust security" in response_text.lower():
+        services.append("Zero Trust Security")
+        
     return services or ["No Cloudflare services detected"]
 
 def find_checkout_details(response_text: str) -> list[str]:
     """Tìm các trang liên quan đến thanh toán."""
     details = []
-    if "checkout" in response_text.lower(): details.append("Checkout Page")
-    if "cart" in response_text.lower(): details.append("Cart Page")
-    if "payment" in response_text.lower(): details.append("Payment Page")
-    if "billing" in response_text.lower(): details.append("Billing Page")
-    if "shipping" in response_text.lower(): details.append("Shipping Page")
+    if "checkout" in response_text.lower():
+        details.append("Checkout Page")
+    if "cart" in response_text.lower():
+        details.append("Cart Page")
+    if "payment" in response_text.lower():
+        details.append("Payment Page")
+    if "billing" in response_text.lower():
+        details.append("Billing Page")
+    if "shipping" in response_text.lower():
+        details.append("Shipping Page")
+        
     return details or ["No checkout details detected"]
 
 def detect_cms_platform(content: str) -> list[str]:
@@ -169,15 +223,11 @@ def check_ssl_details(domain: str) -> dict | None:
                     'subject': subject.get('commonName', 'Unknown'),
                 }
     except Exception as e:
-        # Ghi log lỗi thay vì print để không làm nhiễu output
-        logging.error(f"SSL check failed for {domain}: {e}")
+        logger.error(f"SSL check failed for {domain}: {e}")
         return None
 
-def perform_website_check(url: str, username: str, first_name: str) -> str:
-    """
-    Thực hiện một lần kiểm tra site và trả về chuỗi kết quả.
-    Đã được sửa đổi để nhận username và first_name thay vì object User.
-    """
+def perform_website_check(url: str, user: User) -> str:
+    """Thực hiện một lần kiểm tra site và trả về chuỗi kết quả."""
     normalized_url = normalize_url(url)
     if not normalized_url:
         return f"⚠️ URL không hợp lệ: `{url}`"
@@ -190,7 +240,7 @@ def perform_website_check(url: str, username: str, first_name: str) -> str:
         response.raise_for_status()
         content = response.text
     except requests.RequestException as e:
-        logging.error(f"Failed to fetch {normalized_url}: {e}")
+        logger.error(f"Failed to fetch {normalized_url}: {e}")
         return f"⚠️ Không thể truy cập website: `{url}`\nLỗi: `{e}`"
     
     time_taken = time.time() - start_time
@@ -223,7 +273,7 @@ def perform_website_check(url: str, username: str, first_name: str) -> str:
         ssl_subject = escape_markdown(ssl_details['subject'])
         ssl_valid = "✅"
         
-    checked_by = escape_markdown(first_name if not username else f"@{username}")
+    checked_by = escape_markdown(user.first_name if not user.username else f"@{user.username}")
     
     # Xây dựng tin nhắn trả về
     result_text = (
@@ -247,30 +297,71 @@ def perform_website_check(url: str, username: str, first_name: str) -> str:
     )
     return result_text
 
+# --- LỆNH BOT (COMMAND HANDLERS) ---
+async def site_command(update, context):
+    """Xử lý lệnh /site để check một website."""
+    user = update.effective_user
+    if user.id != ADMIN_ID and user.id not in load_users():
+        await update.message.reply_text(f"Bạn không được phép sử dụng lệnh này. Vui lòng liên hệ Admin: {ADMIN_USERNAME}")
+        return
 
-@app.route('/check', methods=['POST'])
-def handle_check_request():
-    """Endpoint API để nhận yêu cầu kiểm tra website."""
-    data = request.json
-    url = data.get('url')
-    # Lấy thông tin người dùng từ request để hiển thị "Checked by"
-    username = data.get('username')
-    first_name = data.get('first_name')
+    if user.id != ADMIN_ID and not is_bot_on():
+        lang = get_user_lang(user.id)
+        message = MESSAGES_VI["bot_off"] if lang == 'vi' else MESSAGES_EN["bot_off"]
+        await update.message.reply_text(message)
+        return
 
-    if not url:
-        return jsonify({"error": "URL is required"}), 400
+    if not context.args:
+        await update.message.reply_text("Sử dụng: `/site <website.com>`")
+        return
+
+    url_input = context.args[0]
+    msg = await update.message.reply_text(f"⏳ Đang kiểm tra trang `{url_input}`...")
 
     try:
-        # Gọi hàm xử lý chính
-        result = perform_website_check(url, username, first_name)
-        return jsonify({"result": result})
+        # Chạy hàm blocking trong một thread riêng để không chặn bot
+        result_message = await asyncio.to_thread(perform_website_check, url_input, user)
+        await msg.edit_text(result_message, disable_web_page_preview=True)
     except Exception as e:
-        logging.error(f"Error in perform_website_check for URL {url}: {e}", exc_info=True)
-        return jsonify({"error": f"An internal error occurred: {e}"}), 500
+        logger.error(f"Lỗi trong /site command: {e}", exc_info=True)
+        await msg.edit_text(f"⛔️ **Lỗi Hệ Thống khi check site:**\n`{e}`")
 
+async def sitem_command(update, context):
+    """Xử lý lệnh /sitem để check nhiều website."""
+    user = update.effective_user
+    if user.id != ADMIN_ID and user.id not in load_users():
+        await update.message.reply_text(f"Bạn không được phép sử dụng lệnh này. Vui lòng liên hệ Admin: {ADMIN_USERNAME}")
+        return
 
-if __name__ == '__main__':
-    # Chạy Flask server trên cổng 5001
-    # Host 0.0.0.0 để có thể truy cập từ bot (nếu chạy trong container)
-    print("Site Checker service is starting on http://0.0.0.0:5001")
-    app.run(host='0.0.0.0', port=5001)
+    if user.id != ADMIN_ID and not is_bot_on():
+        lang = get_user_lang(user.id)
+        message = MESSAGES_VI["bot_off"] if lang == 'vi' else MESSAGES_EN["bot_off"]
+        await update.message.reply_text(message)
+        return
+
+    text_content = update.message.text.split('/sitem', 1)[-1].strip()
+    if not text_content:
+        await update.message.reply_text("Sử dụng: `/sitem` và dán danh sách website ở dòng dưới."); return
+
+    # Tìm tất cả các URL trong tin nhắn
+    url_pattern = r'(https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+    urls_to_check = [match[0] + match[1] for match in re.findall(url_pattern, text_content)]
+    
+    if not urls_to_check:
+        await update.message.reply_text("Không tìm thấy URL hợp lệ nào để check."); return
+
+    max_urls = 10
+    if len(urls_to_check) > max_urls:
+        await update.message.reply_text(f"⚠️ Quá nhiều URL. Chỉ xử lý {max_urls} URL đầu tiên.")
+        urls_to_check = urls_to_check[:max_urls]
+
+    await update.message.reply_text(f"🚀 Bắt đầu kiểm tra `{len(urls_to_check)}` trang web...")
+
+    for url in urls_to_check:
+        try:
+            result_message = await asyncio.to_thread(perform_website_check, url, user)
+            await update.message.reply_text(result_message, disable_web_page_preview=True)
+        except Exception as e:
+            logger.error(f"Lỗi khi check URL {url} trong /sitem: {e}", exc_info=True)
+            await update.message.reply_text(f"⛔️ Lỗi khi check `{url}`: `{e}`")
+        await asyncio.sleep(1) # Thêm độ trễ để tránh flood
