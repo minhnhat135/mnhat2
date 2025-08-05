@@ -2164,7 +2164,7 @@ async def status_command(update, context):
     
     msg = await update.message.reply_text("⏳ Đang kiểm tra trạng thái các cổng... Vui lòng chờ.")
     
-    test_card = "4242424242424242|12|28|123" # Một thẻ test chung
+    test_card = "4677854300491507|12|28|123" # Một thẻ test chung
 
     final_message = "**📊 TRẠNG THÁI CỔNG THANH TOÁN 📊**\n\n"
     gate_ids = ['6', '7', '8', '9']
