@@ -2089,7 +2089,7 @@ async def status_command(update, context):
     
     msg = await update.message.reply_text("⏳ Checking gate statuses... Please wait.")
     
-    test_card = "4242424242424242|12|28|123" # A generic test card
+    test_card = "5196032172122570|4|28|766" # A generic test card
 
     final_message = "**📊 PAYMENT GATEWAY STATUS 📊**\n\n"
     gate_ids = ['6', '7', '8', '9']
