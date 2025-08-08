@@ -3186,7 +3186,6 @@ async def _validate_and_add_link(session, cd, test_card):
         # Includes other statuses like success, custom, error, etc.
         return False, f"Link with cd='{cd}' did not return a 'failed' status during test. Status was '{status}'.", None
 
-
 async def addlink_command(update, context):
     if update.effective_user.id != ADMIN_ID: return
 
@@ -3200,15 +3199,21 @@ async def addlink_command(update, context):
         await update.message.reply_text("No valid links or codes found. Please use the format `https://donate.raisenow.io/<code>` or just the `code`.")
         return
 
-    codes_to_check = [code for url_tuple in urls for code in url_tuple if code]
-
-    msg = await update.message.reply_text(f"Found `{len(codes_to_check)}` link(s). Starting validation...")
-    test_card = "5168155124645796|9|2028|462"
+    codes_all = [code for url_tuple in urls for code in url_tuple if code]
     multi_links = load_multi_links()
     existing_cds = {link['cd'] for link in multi_links}
-    added_count = 0
-    failed_links = []
+    codes_to_check = [cd for cd in codes_all if cd not in existing_cds]
+    skipped = [cd for cd in codes_all if cd in existing_cds]
+    msg = await update.message.reply_text(
+        f"Total: {len(codes_all)} link(s). " + 
+        (f"Skipped {len(skipped)} existed. " if skipped else "") +
+        f"Checking {len(codes_to_check)} new link(s) with 50 threads..."
+    )
+    if not codes_to_check:
+        await msg.edit_text("All links already exist in database. Nothing to check.")
+        return
 
+    test_card = "5168155124645796|9|2028|462"
     proxy_config = load_proxies()
     proxy_url = None
     if proxy_config.get("enabled") and proxy_config.get("proxies"):
@@ -3217,20 +3222,20 @@ async def addlink_command(update, context):
         if formatted_proxy:
             proxy_url = formatted_proxy.get("http")
 
-    async with aiohttp.ClientSession() as session:
-        for cd in codes_to_check:
-            if cd in existing_cds:
-                failed_links.append(f"`{cd}`: Already exists.")
-                continue
+    results = []
+    failed_links = []
+    added_links = []
+    added_count = 0
 
-            # Kiểm tra link 6 lần nếu 403/405
-            retry = 0
-            last_resp_text = ""
-            last_status_code = None
-            while retry < 6:
-                try:
-                    url1 = f"https://api.raisenow.io/short-identifiers/{cd}"
-                    headers1 = {"User-Agent": random_user_agent(), "Accept": "*/*"}
+    async def check_one_link(cd):
+        retry = 0
+        last_resp_text = ""
+        last_status_code = None
+        while retry < 6:
+            try:
+                url1 = f"https://api.raisenow.io/short-identifiers/{cd}"
+                headers1 = {"User-Agent": random_user_agent(), "Accept": "*/*"}
+                async with aiohttp.ClientSession() as session:
                     async with session.get(url1, headers=headers1, proxy=proxy_url) as response:
                         last_status_code = response.status
                         last_resp_text = await response.text()
@@ -3238,15 +3243,13 @@ async def addlink_command(update, context):
                             retry += 1
                             continue
                         elif response.status != 200:
-                            failed_links.append(f"`{cd}`: Could not fetch link details (Status: {response.status}).")
-                            break
+                            return (cd, False, f"Could not fetch link details (Status: {response.status}).", "")
                         else:
                             resp1_json = await response.json()
                             payload = resp1_json.get("payload", {})
                             card_method = next((m for m in payload.get("payment_methods", []) if m.get("method_name") == "card"), None)
                             if not card_method:
-                                failed_links.append(f"`{cd}`: Does not support card payments.")
-                                break
+                                return (cd, False, "Does not support card payments.", "")
                             link_data = {
                                 "cd": cd,
                                 "account_uuid": payload.get("account_uuid"),
@@ -3254,28 +3257,45 @@ async def addlink_command(update, context):
                                 "profile": card_method.get("profile")
                             }
                             if all(link_data.values()):
-                                multi_links.append(link_data)
-                                existing_cds.add(cd)
-                                added_count += 1
+                                return (cd, True, link_data, "")
                             else:
-                                failed_links.append(f"`{cd}`: Link OK but failed to extract all details.")
-                            break
-                except Exception as e:
-                    last_resp_text = f"Network error: {e}"
-                    retry += 1
+                                return (cd, False, "Link OK but failed to extract all details.", "")
+            except Exception as e:
+                last_resp_text = f"Network error: {e}"
+                retry += 1
+        # Nếu sau 6 lần vẫn lỗi 403/405
+        if retry == 6 and last_status_code in (403, 405):
+            with open(FAILED_LINK_FILE, "a", encoding="utf-8") as f:
+                f.write(f"LINK: {cd}\nSTATUS: {last_status_code}\nFULL RESPONSE:\n{last_resp_text}\n\n{'-'*20}\n")
+            return (cd, False, f"Failed after 6 retries with status {last_status_code}. Check failed_addlink.txt for full response.", last_resp_text)
+        return (cd, False, f"Failed after 6 tries. Last status: {last_status_code}", last_resp_text)
 
-            # Nếu sau 6 lần vẫn lỗi 403/405
-            if retry == 6 and last_status_code in (403, 405):
-                failed_links.append(f"`{cd}`: Failed after 6 retries with status {last_status_code}. Check failed_addlink.txt for full response.")
-                # --- Lưu ra file ---
-                with open(FAILED_LINK_FILE, "a", encoding="utf-8") as f:
-                    f.write(f"LINK: {cd}\nSTATUS: {last_status_code}\nFULL RESPONSE:\n{last_resp_text}\n\n{'-'*20}\n")
+    # Đa luồng 50
+    loop = asyncio.get_event_loop()
+    semaphore = asyncio.Semaphore(50)
+    async def bound_check(cd):
+        async with semaphore:
+            return await check_one_link(cd)
+    tasks = [bound_check(cd) for cd in codes_to_check]
+    results = await asyncio.gather(*tasks)
+
+    # Cập nhật kết quả
+    for cd, ok, data, resp in results:
+        if ok:
+            multi_links.append(data)
+            added_count += 1
+            added_links.append(f"https://donate.raisenow.io/{cd}")
+        else:
+            failed_links.append(f"`{cd}`: {data}")
 
     save_multi_links(multi_links)
-    final_message = f"✅ **Validation Complete!**\n\n- **Added:** `{added_count}` new link(s).\n- **Total Links:** `{len(multi_links)}`"
+    final_message = f"✅ **Validation Complete!**\n- **Added:** `{added_count}` new link(s).\n- **Total Links:** `{len(multi_links)}`"
+    if skipped:
+        final_message += f"\n\n⏩ **Skipped (already existed):**\n" + "\n".join(f"https://donate.raisenow.io/{cd}" for cd in skipped)
+    if added_links:
+        final_message += f"\n\n✅ **Newly Added:**\n" + "\n".join(added_links)
     if failed_links:
         final_message += "\n\n❌ **Failed Links:**\n" + "\n".join(f"- {reason}" for reason in failed_links)
-
     await msg.edit_text(final_message)
 
 async def deletelink_command(update, context):
