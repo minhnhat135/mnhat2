@@ -2334,11 +2334,16 @@ def _validate_and_save_link_worker(url: str, session: requests.Session):
         except json.JSONDecodeError:
             return f"❌ Failed to parse JSON from initial request for `{cd}`.\n**Response (Request 1):**\n```{response.text}```"
 
-        # --- MODIFIED LOGIC: Find profile inside payment_methods ---
-        account_uuid = data.get("account_uuid")
-        solution_uuid = data.get("solution_uuid")
+        # --- CORRECTED LOGIC: Look for data inside the 'payload' object ---
+        payload = data.get("payload", {})
+        if not isinstance(payload, dict):
+            return f"❌ Invalid `payload` structure for `{cd}`.\n\n**Full Response (Request 1):**\n```json\n{pretty_data}\n```"
+
+        solution_uuid = data.get("solution_uuid") # This one is at the top level
+        account_uuid = payload.get("account_uuid")
         card_profile = None
-        payment_methods = data.get("payment_methods", [])
+        
+        payment_methods = payload.get("payment_methods", [])
         if isinstance(payment_methods, list):
             for method in payment_methods:
                 if isinstance(method, dict) and method.get("method_name") == "card":
