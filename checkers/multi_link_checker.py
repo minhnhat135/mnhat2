@@ -110,8 +110,9 @@ def check_card_multi_link(session, line, cc, mes, ano, cvv, bin_info, cancellati
 
         # Step 1: Tokenize card
         tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
-        random_form_part = ''.join(random.choices(string.digits, k=18))
-        form_id = f"250{random_form_part}"
+        
+        # --- FIXED: Use a known-good static formId to prevent tokenization errors ---
+        form_id = "250806042656273071"
 
         tokenize_headers = {
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
