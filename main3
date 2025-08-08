@@ -3173,7 +3173,6 @@ async def addlink_command(update, context):
         await update.message.reply_text("No valid links or codes found. Please use the format `https://donate.raisenow.io/<code>` or just the `code`.")
         return
 
-    # urls is a list of tuples, e.g., [('hwzyq', ''), ('', 'wcbkt')]. We need to flatten and filter it.
     codes_to_check = [code for url_tuple in urls for code in url_tuple if code]
 
     msg = await update.message.reply_text(f"Found `{len(codes_to_check)}` link(s). Starting validation...")
@@ -3197,9 +3196,8 @@ async def addlink_command(update, context):
                 failed_links.append(f"`{cd}`: Already exists.")
                 continue
 
-            # This is a simplified test using the existing check_card logic which handles retries
-            # For simplicity, we'll run the charge test directly
-            status, _, response_text, _, _ = check_card(test_card)
+            # SỬA LỖI unpack ở đây
+            status, _, response_text, _ = check_card(test_card)
 
             if status == 'decline':
                  # If decline, we need to get the link details now
@@ -3242,7 +3240,6 @@ async def addlink_command(update, context):
         final_message += "\n\n❌ **Failed Links:**\n" + "\n".join(f"- {reason}" for reason in failed_links)
 
     await msg.edit_text(final_message)
-
 
 async def deletelink_command(update, context):
     """(Admin) Displays the multi-link list for deletion."""
