@@ -1550,13 +1550,13 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
                 response_display_part = f"**💬 Phản hồi:** `Yêu cầu 3D Secure`"
             elif status == 'unknown':
                 if user.id == ADMIN_ID:
-                    safe_response = str(response_message)[:1000]
-                    response_display_part = f"**💬 Phản hồi:**\n```json\n{safe_response}\n```"
+                    safe_response = escape_markdown(str(response_message), version=2)
+                    response_display_part = f"**💬 Phản hồi:**\n```json\n{safe_response[:1000]}\n```"
                 else:
                     response_display_part = f"**💬 Phản hồi:** `Không xác định`"
             elif status in ['custom', 'invalid_format', 'error']:
-                safe_response = str(response_message)[:1000]
-                response_display_part = f"**💬 Phản hồi:**\n```json\n{safe_response}\n```"
+                safe_response = escape_markdown(str(response_message), version=2)
+                response_display_part = f"**💬 Phản hồi:**\n```json\n{safe_response[:1000]}\n```"
             else:
                 response_display_part = f"**💬 Phản hồi:** `{response_message}`"
 
@@ -2765,7 +2765,7 @@ async def test_proxy_command(update, context):
 # --- NEW: MULTI-LINK MANAGEMENT COMMANDS ---
 
 async def add_link_command(update, context):
-    """(Admin) Adds and validates one or more Raisenow links."""
+    """(Admin) Adds and validates one or more Raisenow links using multi-threading."""
     if update.effective_user.id != ADMIN_ID: return
     
     text_content = update.message.text.split('/addlink', 1)[-1].strip()
@@ -2777,108 +2777,186 @@ async def add_link_command(update, context):
     if not urls:
         await update.message.reply_text("Không tìm thấy link nào để thêm."); return
 
-    await update.message.reply_text(f"⏳ Bắt đầu quá trình xác thực cho `{len(urls)}` link. Việc này có thể mất một lúc...")
-
-    success_count = 0
-    failed_links = []
+    # --- SHARED DATA FOR THREADS ---
+    total_links = len(urls)
+    processed_count = 0
+    counters = {'ok': 0, 'not_supported': 0, 'retry_fail': 0, 'other_error': 0}
+    failed_links_details = {'not_supported': [], 'retry_fail': [], 'other_error': []}
+    thread_statuses = {} # {thread_id: "status message"}
     
-    for url in urls:
+    # --- LOCKS FOR SAFE CONCURRENT OPERATIONS ---
+    counter_lock = threading.Lock()
+    message_lock = threading.Lock()
+    
+    msg = await update.message.reply_text("🚀 Đang khởi tạo các luồng xác thực...")
+
+    # --- HELPER FUNCTION TO UPDATE THE MESSAGE ---
+    async def _update_status_message(is_final=False):
+        with message_lock:
+            nonlocal processed_count
+            processed_count = sum(counters.values())
+
+            # Header
+            header = "🏁 **XÁC THỰC HOÀN TẤT** 🏁" if is_final else "⚙️ **ĐANG XÁC THỰC LINK** ⚙️"
+            
+            # Summary
+            summary = (
+                f"-----------------------------------\n"
+                f"**Tổng tiến trình:** {processed_count}/{total_links}\n"
+                f"✅ **OK:** {counters['ok']}\n"
+                f"⚠️ **Không hỗ trợ:** {counters['not_supported']}\n"
+                f"🌐 **Lỗi mạng/API:** {counters['retry_fail']}\n"
+                f"❌ **Lỗi khác:** {counters['other_error']}\n"
+                f"-----------------------------------"
+            )
+            
+            # Thread statuses
+            thread_lines = []
+            for i in range(1, 4): # Max 3 threads
+                status = thread_statuses.get(i, "Chưa hoạt động")
+                thread_lines.append(f"**Luồng {i}:** {status}")
+            thread_summary = "\n".join(thread_lines)
+
+            # Final report of failed links
+            final_report = ""
+            if is_final:
+                if failed_links_details['not_supported']:
+                    final_report += "\n\n**⚠️ Link không hỗ trợ thẻ:**\n`" + "`, `".join(failed_links_details['not_supported']) + "`"
+                if failed_links_details['retry_fail']:
+                    final_report += "\n\n**🌐 Link lỗi mạng/API:**\n`" + "`, `".join(failed_links_details['retry_fail']) + "`"
+                if failed_links_details['other_error']:
+                    details = [f"- `{cd}`: {escape_markdown(reason, version=2)}" for cd, reason in failed_links_details['other_error']]
+                    final_report += "\n\n**❌ Link lỗi khác:**\n" + "\n".join(details)
+
+            # Combine and send
+            final_text = f"{header}\n{summary}\n{thread_summary}\n{final_report}"
+            try:
+                await msg.edit_text(final_text)
+            except telegram.error.BadRequest as e:
+                if "Message is not modified" not in str(e):
+                    logger.warning(f"Error updating link validation status: {e}")
+            except Exception as e:
+                logger.error(f"Unknown error updating link validation status: {e}")
+
+    # --- WORKER FUNCTION FOR EACH THREAD ---
+    def _validate_link_worker(url, thread_num):
+        thread_id = thread_num
+        thread_statuses[thread_id] = f"Đang xử lý `{url}`..."
+        
+        # This function runs in a separate thread, so it needs its own event loop for async calls
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        loop.run_until_complete(_update_status_message())
+
         try:
+            # --- SETUP SESSION WITH PROXY ---
+            session = requests.Session()
+            proxy_config = load_proxies()
+            if proxy_config.get("enabled") and proxy_config.get("proxies"):
+                try:
+                    proxy_str = random.choice(proxy_config["proxies"])
+                    proxy_dict = _format_proxy_for_requests(proxy_str)
+                    if proxy_dict:
+                        session.proxies = proxy_dict
+                except IndexError:
+                    logger.warning("Proxy list is empty but proxy usage is enabled.")
+            
+            # --- Step 1: Parse and Validate URL format ---
             parsed_url = urlparse(url)
             if not all([parsed_url.scheme, parsed_url.netloc == 'donate.raisenow.io', parsed_url.path]):
-                failed_links.append(f"`{url}` - Định dạng URL không hợp lệ.")
-                continue
+                raise ValueError("Định dạng URL không hợp lệ.")
             
             cd = parsed_url.path.strip('/')
             if not cd:
-                failed_links.append(f"`{url}` - Không thể trích xuất mã (cd) từ URL.")
-                continue
+                raise ValueError("Không thể trích xuất mã (cd) từ URL.")
 
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"🔎 Đang kiểm tra link: `{cd}`")
-
-            # --- Validation Step 1: Check for "method_name":"card" ---
+            # --- Step 2: Check Identifier ---
+            thread_statuses[thread_id] = f"Kiểm tra định danh cho `{cd}`"
+            loop.run_until_complete(_update_status_message())
+            
             identifier_url = f"https://api.raisenow.io/short-identifiers/{cd}"
             headers = {"User-Agent": random_user_agent()}
-            session = requests.Session()
-            
-            response, error = await asyncio.to_thread(make_request_with_retry, session, 'get', identifier_url, headers=headers)
+            response, error = make_request_with_retry(session, 'get', identifier_url, headers=headers)
             
             if error or not response:
-                failed_links.append(f"`{cd}` - Lỗi khi lấy thông tin định danh: {error}")
-                continue
+                with counter_lock:
+                    counters['retry_fail'] += 1
+                    failed_links_details['retry_fail'].append(cd)
+                return
 
-            try:
-                identifier_data = response.json()
-                if not isinstance(identifier_data, dict):
-                    failed_links.append(f"`{cd}` - Phản hồi định danh không phải là JSON.")
-                    continue
-                
-                method_name = identifier_data.get("method_name")
-                if method_name != "card":
-                    failed_links.append(f"`{cd}` - Không hỗ trợ thẻ (method_name: {method_name}).")
-                    continue
+            if response.status_code != 200:
+                 raise ValueError(f"Lỗi định danh: Status {response.status_code}")
 
-                account_uuid = identifier_data.get("account_uuid")
-                solution_uuid = identifier_data.get("solution_uuid")
-                profile = identifier_data.get("profile")
-
-                if not all([account_uuid, solution_uuid, profile]):
-                    failed_links.append(f"`{cd}` - Thiếu UUIDs hoặc profile trong phản hồi.")
-                    continue
-
-            except json.JSONDecodeError:
-                failed_links.append(f"`{cd}` - Lỗi phân tích JSON từ phản hồi định danh.")
-                continue
+            identifier_data = response.json()
+            if not isinstance(identifier_data, dict):
+                raise TypeError("Phản hồi định danh không phải là JSON.")
             
-            # --- Validation Step 2: Test with a real (test) card ---
-            test_card = "4012888818888888|01|28|123" # A test card that should fail
+            method_name = identifier_data.get("method_name")
+            if method_name != "card":
+                with counter_lock:
+                    counters['not_supported'] += 1
+                    failed_links_details['not_supported'].append(cd)
+                return
+
+            account_uuid = identifier_data.get("account_uuid")
+            solution_uuid = identifier_data.get("solution_uuid")
+            profile = identifier_data.get("profile")
+            if not all([account_uuid, solution_uuid, profile]):
+                raise ValueError("Thiếu UUIDs hoặc profile trong phản hồi.")
+            
+            # --- Step 3: Test with a real (test) card ---
+            thread_statuses[thread_id] = f"Kiểm tra payload cho `{cd}`"
+            loop.run_until_complete(_update_status_message())
+
+            test_card = "4012888818888888|01|28|123"
             cc, mes, ano, cvv = test_card.split('|')
             ano_full = f"20{ano}"
-
-            # We create a dummy check function call to see if the payload works
-            from checkers.multi_link_checker import check_card_multi_link as test_checker
             
-            test_status, _, test_response, _ = await asyncio.to_thread(
-                test_checker, session, test_card, cc, mes, ano_full, cvv, {}, None, 
-                lambda: {'mode': 'live'}, # Simulate live check
-                lambda g, c: 50 # Dummy charge func
+            from checkers.multi_link_checker import check_card_multi_link as test_checker
+            test_status, _, _, _ = test_checker(
+                session, test_card, cc, mes, ano_full, cvv, {}, None, 
+                lambda: {'mode': 'live'}, lambda g, c: 50
             )
 
             if test_status in ['decline', 'live_success', 'custom']:
-                # This is GOOD. It means the API accepted the payload and processed the card.
-                link_data = {
-                    "cd": cd,
-                    "account_uuid": account_uuid,
-                    "solution_uuid": solution_uuid,
-                    "profile": profile
-                }
-                
-                current_links = load_multi_links()
-                # Avoid duplicates
-                if not any(d['cd'] == cd for d in current_links):
-                    current_links.append(link_data)
-                    save_multi_links(current_links)
-                    success_count += 1
-                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ **Thành công!** Link `{cd}` hợp lệ và đã được thêm.")
-                else:
-                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"ℹ️ Link `{cd}` đã tồn tại trong cơ sở dữ liệu.")
-
-            elif response.status_code == 400:
-                 failed_links.append(f"`{cd}` - Link không hỗ trợ payload (Lỗi 400).")
+                with counter_lock:
+                    link_data = {"cd": cd, "account_uuid": account_uuid, "solution_uuid": solution_uuid, "profile": profile}
+                    current_links = load_multi_links()
+                    if not any(d['cd'] == cd for d in current_links):
+                        current_links.append(link_data)
+                        save_multi_links(current_links)
+                        counters['ok'] += 1
+                    else: # Already exists, count as 'other error' to avoid confusion
+                        counters['other_error'] += 1
+                        failed_links_details['other_error'].append((cd, "Link đã tồn tại"))
             else:
-                 failed_links.append(f"`{cd}` - Thất bại kiểm tra thực tế (Trạng thái: {test_status}, Phản hồi: {str(test_response)[:200]})")
+                raise ValueError(f"Thất bại kiểm tra payload (Status: {test_status})")
 
         except Exception as e:
-            logger.error(f"Error validating link {url}: {e}", exc_info=True)
-            failed_links.append(f"`{url}` - Lỗi hệ thống trong quá trình xác thực: {e}")
-        
-        await asyncio.sleep(1) # Be nice to the API
+            with counter_lock:
+                cd_val = cd if 'cd' in locals() else url
+                counters['other_error'] += 1
+                failed_links_details['other_error'].append((cd_val, str(e)))
+        finally:
+            thread_statuses[thread_id] = "Rảnh rỗi ✅"
+            loop.run_until_complete(_update_status_message())
+            loop.close()
 
-    summary_message = f"🏁 **Hoàn tất xác thực!**\n\n- **Thành công:** `{success_count}` link đã được thêm.\n- **Thất bại:** `{len(failed_links)}` link."
-    if failed_links:
-        summary_message += "\n\n**Các link thất bại:**\n" + "\n".join(failed_links)
-    
-    await update.message.reply_text(summary_message)
+    # --- MAIN EXECUTION LOGIC ---
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        # Assign URLs to threads
+        futures = [executor.submit(_validate_link_worker, url, i % 3 + 1) for i, url in enumerate(urls)]
+        
+        # Wait for all threads to complete
+        for future in as_completed(futures):
+            try:
+                future.result() # To catch any exceptions that might have occurred in the worker
+            except Exception as e:
+                logger.error(f"A validation worker failed unexpectedly: {e}")
+
+    # Final update
+    await _update_status_message(is_final=True)
 
 
 async def delete_link_command(update, context):
