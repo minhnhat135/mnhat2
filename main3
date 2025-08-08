@@ -2184,7 +2184,7 @@ async def _status_command_worker(update, context):
     
     msg = await update.message.reply_text("⏳ Checking gate statuses... This may not test all gates completely. Use individual gate commands for full details.")
     
-    test_card = "5196032172122570|4|28|766"
+    test_card = "4170331140410379|4|28|766"
 
     gate_ids = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12']
     
@@ -2311,7 +2311,7 @@ def _validate_and_save_link_worker(url: str, session: requests.Session):
             return f"❌ Missing required data (uuid, profile) for `{cd}`."
 
         # 2. Perform a test check (we expect it to fail with a decline)
-        test_card = "4000000000000002|12|29|123" # Known test card that usually gets declined
+        test_card = "4170331140410379|12|29|123" # Known test card that usually gets declined
         cc, mes, ano, cvv = test_card.split('|')
         
         # We only need to test one mode (e.g., live) to see if payload is accepted
