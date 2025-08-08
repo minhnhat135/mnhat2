@@ -1595,4 +1595,4 @@ async def _multi_check_worker(update, context):
                         if "Message is not modified" not in str(e): logger.warning(f"Error updating /multi progress: {e}")
                         pass
                     except Exception as e:
-                        logger.error(f"Unknown
+                        logger.error(f"Unknown error: {e}")
