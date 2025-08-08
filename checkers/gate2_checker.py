@@ -5,28 +5,25 @@ import random
 import string
 import time
 
-# --- UTILITY FUNCTIONS (Copied from main bot file for self-containment) ---
+# Lấy logger để ghi lại thông tin
 logger = logging.getLogger(__name__)
 
+# --- CÁC HÀM TIỆN ÍCH ĐƯỢC SAO CHÉP TỪ MAIN ---
 def generate_random_string(length=8):
-    """Generates a random string of characters."""
+    """Tạo một chuỗi ký tự ngẫu nhiên."""
     letters = string.ascii_lowercase
     return ''.join(random.choice(letters) for _ in range(length))
 
 def random_user_agent():
-    """Generates a random realistic User-Agent string."""
+    """Tạo một chuỗi User-Agent thực tế ngẫu nhiên."""
     chrome_major = random.randint(100, 125)
     chrome_build = random.randint(0, 6500)
     chrome_patch = random.randint(0, 250)
-    win_major = random.randint(10, 11)
-    win_minor = random.randint(0, 3)
-    win_build = random.randint(10000, 22631)
-    win_patch = random.randint(0, 500)
     webkit_major = random.randint(537, 605)
     webkit_minor = random.randint(36, 99)
     safari_version = f"{webkit_major}.{webkit_minor}"
     chrome_version = f"{chrome_major}.0.{chrome_build}.{chrome_patch}"
-    win_version = f"{win_major}.{win_minor}; Win64; x64"
+    win_version = f"10.0; Win64; x64"
     return (
         f"Mozilla/5.0 (Windows NT {win_version}) "
         f"AppleWebKit/{safari_version} (KHTML, like Gecko) "
@@ -52,10 +49,11 @@ def make_request_with_retry(session, method, url, max_retries=5, cancellation_ev
     logger.error(final_error_message)
     return None, final_error_message
 
-# --- MAIN GATE CHECKER FUNCTION ---
-def check_card_gate2(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate_mode_func, get_charge_value_func, custom_charge_amount=None):
+# --- LOGIC CHÍNH CỦA GATE 2 ---
+
+def check_card_gate2(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate2_mode_func, get_charge_value_func, custom_charge_amount=None):
     """Logic for Gate 2 - Charge or Live Check Mode"""
-    gate2_mode = get_gate_mode_func()
+    gate2_mode = get_gate2_mode_func()
     try:
         user_agent = random_user_agent()
         first_name = generate_random_string(random.randint(12, 20))
@@ -100,13 +98,13 @@ def check_card_gate2(session, line, cc, mes, ano, cvv, bin_info, cancellation_ev
         try:
             token_data = token_response.json()
             if "error" in token_data and "message" in token_data.get("error", {}):
-                 return 'decline', line, token_data["error"]["message"], bin_info
+                return 'decline', line, token_data["error"]["message"], bin_info
             transaction_id = token_data.get("transactionId")
             if not transaction_id:
                 return 'decline', line, token_data.get("error", "Unknown error at Tokenize"), bin_info
         except json.JSONDecodeError:
             if token_response.status_code != 200:
-                 return 'error', line, f"HTTP Error {token_response.status_code} during Tokenization", bin_info
+                return 'error', line, f"HTTP Error {token_response.status_code} during Tokenization", bin_info
             return 'error', line, "Tokenize response was not JSON", bin_info
 
         # Step 2: Request based on mode
