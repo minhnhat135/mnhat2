@@ -3187,116 +3187,161 @@ async def _validate_and_add_link(session, cd, test_card):
         return False, f"Link with cd='{cd}' did not return a 'failed' status during test. Status was '{status}'.", None
 
 async def addlink_command(update, context):
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID:
+        return
 
     text_content = " ".join(context.args)
     if not text_content:
-        await update.message.reply_text("Usage: `/addlink <link1> <link2>...`\nLinks can be separated by spaces or newlines.")
+        await update.message.reply_text(
+            "Usage: `/addlink <link1> <link2> ...`\nLinks can be separated by spaces or newlines."
+        )
         return
 
-    urls = re.findall(r'https?://donate\.raisenow\.io/(\w+)|(\w{5,})', text_content)
+    # Tách mã cd từ dạng link hoặc chỉ code
+    urls = re.findall(r'https?://donate\.raisenow\.io/(\w+)|\b(\w{5,})\b', text_content)
     if not urls:
-        await update.message.reply_text("No valid links or codes found. Please use the format `https://donate.raisenow.io/<code>` or just the `code`.")
+        await update.message.reply_text(
+            "No valid links or codes found. Use `https://donate.raisenow.io/<code>` hoặc chỉ `<code>`."
+        )
         return
 
-    codes_all = [code for url_tuple in urls for code in url_tuple if code]
+    codes_all = [code for pair in urls for code in pair if code]
     multi_links = load_multi_links()
-    existing_cds = {link['cd'] for link in multi_links}
+    existing_cds = {entry['cd'] for entry in multi_links}
+
+    # Lọc trùng trước khi kiểm tra
     codes_to_check = [cd for cd in codes_all if cd not in existing_cds]
     skipped = [cd for cd in codes_all if cd in existing_cds]
+
     msg = await update.message.reply_text(
-        f"Total: {len(codes_all)} link(s). " + 
-        (f"Skipped {len(skipped)} existed. " if skipped else "") +
-        f"Checking {len(codes_to_check)} new link(s) with 50 threads..."
+        f"Total: {len(codes_all)} link(s). "
+        + (f"Skipped {len(skipped)} existed. " if skipped else "")
+        + f"Checking {len(codes_to_check)} new link(s) with 50 workers..."
     )
+
     if not codes_to_check:
-        await msg.edit_text("All links already exist in database. Nothing to check.")
+        await msg.edit_text("All links already exist. Nothing to check.")
         return
 
-    test_card = "5168155124645796|9|2028|462"
-    proxy_config = load_proxies()
-    proxy_url = None
-    if proxy_config.get("enabled") and proxy_config.get("proxies"):
-        proxy_str = random.choice(proxy_config["proxies"])
-        formatted_proxy = _format_proxy_for_requests(proxy_str)
-        if formatted_proxy:
-            proxy_url = formatted_proxy.get("http")
-
-    results = []
-    failed_links = []
-    added_links = []
-    added_count = 0
-
-    async def check_one_link(cd):
+    # Hàm kiểm tra 1 link (KHÔNG dùng proxy ở đây)
+    async def check_one(cd: str):
         retry = 0
-        last_resp_text = ""
-        last_status_code = None
+        last_status = None
+        last_body = ""
         while retry < 6:
             try:
-                url1 = f"https://api.raisenow.io/short-identifiers/{cd}"
-                headers1 = {"User-Agent": random_user_agent(), "Accept": "*/*"}
+                # Luôn tạo session riêng để chắc chắn không bị inject proxy ngoài ý muốn
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url1, headers=headers1, proxy=proxy_url) as response:
-                        last_status_code = response.status
-                        last_resp_text = await response.text()
-                        if response.status in (403, 405):
+                    url = f"https://api.raisenow.io/short-identifiers/{cd}"
+                    headers = {
+                        "User-Agent": random_user_agent(),
+                        "Accept": "*/*",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Connection": "keep-alive",
+                    }
+                    # KHÔNG truyền proxy => luôn IP thật
+                    async with session.get(url, headers=headers, timeout=15) as resp:
+                        last_status = resp.status
+                        last_body = await resp.text()
+
+                        # Retry nếu 403 / 405
+                        if resp.status in (403, 405):
                             retry += 1
                             continue
-                        elif response.status != 200:
-                            return (cd, False, f"Could not fetch link details (Status: {response.status}).", "")
-                        else:
-                            resp1_json = await response.json()
-                            payload = resp1_json.get("payload", {})
-                            card_method = next((m for m in payload.get("payment_methods", []) if m.get("method_name") == "card"), None)
-                            if not card_method:
-                                return (cd, False, "Does not support card payments.", "")
-                            link_data = {
-                                "cd": cd,
-                                "account_uuid": payload.get("account_uuid"),
-                                "solution_uuid": payload.get("solution_uuid"),
-                                "profile": card_method.get("profile")
-                            }
-                            if all(link_data.values()):
-                                return (cd, True, link_data, "")
-                            else:
-                                return (cd, False, "Link OK but failed to extract all details.", "")
-            except Exception as e:
-                last_resp_text = f"Network error: {e}"
-                retry += 1
-        # Nếu sau 6 lần vẫn lỗi 403/405
-        if retry == 6 and last_status_code in (403, 405):
-            with open(FAILED_LINK_FILE, "a", encoding="utf-8") as f:
-                f.write(f"LINK: {cd}\nSTATUS: {last_status_code}\nFULL RESPONSE:\n{last_resp_text}\n\n{'-'*20}\n")
-            return (cd, False, f"Failed after 6 retries with status {last_status_code}. Check failed_addlink.txt for full response.", last_resp_text)
-        return (cd, False, f"Failed after 6 tries. Last status: {last_status_code}", last_resp_text)
 
-    # Đa luồng 50
-    loop = asyncio.get_event_loop()
+                        if resp.status != 200:
+                            return (cd, False, f"HTTP {resp.status} fetching metadata")
+
+                        # Parse JSON
+                        try:
+                            data = await resp.json()
+                        except Exception:
+                            return (cd, False, "Invalid JSON response")
+
+                        payload = data.get("payload", {})
+                        if not payload:
+                            return (cd, False, "Missing payload")
+
+                        pm_list = payload.get("payment_methods", [])
+                        card_method = next(
+                            (m for m in pm_list if m.get("method_name") == "card"), None
+                        )
+                        if not card_method:
+                            return (cd, False, "No card payment method")
+
+                        link_data = {
+                            "cd": cd,
+                            "account_uuid": payload.get("account_uuid"),
+                            "solution_uuid": payload.get("solution_uuid"),
+                            "profile": card_method.get("profile"),
+                        }
+                        if not all(link_data.values()):
+                            return (cd, False, "Incomplete extracted data")
+
+                        return (cd, True, link_data)
+
+            except asyncio.TimeoutError:
+                retry += 1
+                last_body = "Timeout"
+                continue
+            except aiohttp.ClientError as e:
+                retry += 1
+                last_body = f"ClientError: {e}"
+                continue
+            except Exception as e:
+                retry += 1
+                last_body = f"Unexpected: {e}"
+                continue
+
+        # Sau 6 lần retry vẫn 403 / 405 hoặc thất bại
+        if last_status in (403, 405):
+            with open(FAILED_LINK_FILE, "a", encoding="utf-8") as f:
+                f.write(
+                    f"LINK: {cd}\nSTATUS: {last_status}\nFULL RESPONSE:\n{last_body}\n{'-'*40}\n"
+                )
+            return (cd, False, f"Failed after 6 retries ({last_status}) logged")
+        return (cd, False, f"Failed after retries (last status: {last_status})")
+
+    # Giới hạn đồng thời 50
     semaphore = asyncio.Semaphore(50)
-    async def bound_check(cd):
+
+    async def bound_task(cd):
         async with semaphore:
-            return await check_one_link(cd)
-    tasks = [bound_check(cd) for cd in codes_to_check]
+            return await check_one(cd)
+
+    tasks = [bound_task(cd) for cd in codes_to_check]
     results = await asyncio.gather(*tasks)
 
-    # Cập nhật kết quả
-    for cd, ok, data, resp in results:
+    added = 0
+    failed_lines = []
+    added_links_display = []
+
+    for cd, ok, info in results:
         if ok:
-            multi_links.append(data)
-            added_count += 1
-            added_links.append(f"https://donate.raisenow.io/{cd}")
+            multi_links.append(info)
+            added += 1
+            added_links_display.append(f"https://donate.raisenow.io/{cd}")
         else:
-            failed_links.append(f"`{cd}`: {data}")
+            failed_lines.append(f"`{cd}`: {info}")
 
     save_multi_links(multi_links)
-    final_message = f"✅ **Validation Complete!**\n- **Added:** `{added_count}` new link(s).\n- **Total Links:** `{len(multi_links)}`"
+
+    summary = [
+        "✅ **Validation Complete!**",
+        f"- Added: `{added}`",
+        f"- Total Stored: `{len(multi_links)}`",
+    ]
     if skipped:
-        final_message += f"\n\n⏩ **Skipped (already existed):**\n" + "\n".join(f"https://donate.raisenow.io/{cd}" for cd in skipped)
-    if added_links:
-        final_message += f"\n\n✅ **Newly Added:**\n" + "\n".join(added_links)
-    if failed_links:
-        final_message += "\n\n❌ **Failed Links:**\n" + "\n".join(f"- {reason}" for reason in failed_links)
-    await msg.edit_text(final_message)
+        summary.append("\n⏩ **Skipped (already existed):**")
+        summary.extend(f"- https://donate.raisenow.io/{cd}" for cd in skipped)
+    if added_links_display:
+        summary.append("\n✅ **Newly Added:**")
+        summary.extend(f"- {u}" for u in added_links_display)
+    if failed_lines:
+        summary.append("\n❌ **Failed:**")
+        summary.extend(f"- {line}" for line in failed_lines)
+
+    await msg.edit_text("\n".join(summary))
 
 async def deletelink_command(update, context):
     """(Admin) Displays the multi-link list for deletion."""
