@@ -2184,7 +2184,7 @@ async def _status_command_worker(update, context):
     
     msg = await update.message.reply_text("⏳ Checking gate statuses... This may not test all gates completely. Use individual gate commands for full details.")
     
-    test_card = "4170331140410379|4|28|766"
+    test_card = "5196032172122570|4|28|766"
 
     gate_ids = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12']
     
@@ -2297,7 +2297,7 @@ def _validate_and_save_link_worker(url: str, session: requests.Session):
             return f"❌ Failed to fetch data for `{cd}`. Error: {error or 'No response'}"
         
         if response.status_code != 200:
-             return f"❌ Failed to fetch data for `{cd}`. Status: {response.status_code}"
+             return f"❌ Failed to fetch data for `{cd}`. Status: {response.status_code}\nResponse: ```{response.text}```"
 
         data = response.json()
         if data.get("method_name") != "card":
@@ -2311,34 +2311,44 @@ def _validate_and_save_link_worker(url: str, session: requests.Session):
             return f"❌ Missing required data (uuid, profile) for `{cd}`."
 
         # 2. Perform a test check (we expect it to fail with a decline)
-        test_card = "4170331140410379|12|29|123" # Known test card that usually gets declined
+        test_card = "4000000000000002|12|29|123" # Known test card that usually gets declined
         cc, mes, ano, cvv = test_card.split('|')
         
-        # We only need to test one mode (e.g., live) to see if payload is accepted
         status, _, full_response, _ = check_card_multi_link(
             session, test_card, cc, mes, ano, cvv, {}, None, 
-            get_mode_func=lambda: 'live', # test live mode
-            _get_charge_value=lambda _, __: 50, # dummy function
+            get_mode_func=lambda: 'live',
+            _get_charge_value=lambda _, __: 50,
             custom_charge_amount=None
         )
+        
+        # --- MODIFIED: Create detailed response string to append to all messages ---
+        try:
+            pretty_response = json.dumps(json.loads(full_response), indent=2)
+        except:
+            pretty_response = str(full_response)
+        response_details = f"\n\n**Full Response (Request 2):**\n```\n{pretty_response}\n```"
 
+        msg = ""
         if status == 'decline':
-            # This is the expected outcome for a valid link with a test card
             saved_links = load_multi_links()
             if any(link.get('cd') == cd for link in saved_links):
-                return f"ℹ️ Link `{cd}` is already saved and seems to be working."
-            
-            link_data = {
-                "url": url, "cd": cd, "account_uuid": account_uuid,
-                "solution_uuid": solution_uuid, "profile": profile
-            }
-            saved_links.append(link_data)
-            save_multi_links(saved_links)
-            return f"✅ **Link OK:** `{cd}` was successfully added."
+                msg = f"ℹ️ Link `{cd}` is already saved and OK."
+            else:
+                link_data = {
+                    "url": url, "cd": cd, "account_uuid": account_uuid,
+                    "solution_uuid": solution_uuid, "profile": profile
+                }
+                saved_links.append(link_data)
+                save_multi_links(saved_links)
+                msg = f"✅ **Link OK:** `{cd}` was successfully added."
+            return msg + response_details
+
         elif status == 'error' or status == 'gate_dead':
-             return f"❌ **Link Invalid Payload:** `{cd}`. The server rejected the request. Response: `{str(full_response)[:200]}`"
+             msg = f"❌ **Link Invalid Payload:** `{cd}`. The server rejected the request."
+             return msg + response_details
         else:
-             return f"🟡 **Link Unknown Status:** `{cd}`. Status: `{status}`. Please check manually. It has been added anyway."
+             msg = f"🟡 **Link Unknown Status:** `{cd}`. Status: `{status}`. Please check manually. It has been added anyway."
+             return msg + response_details
 
     except Exception as e:
         logger.error(f"Error validating link {url}: {e}", exc_info=True)
@@ -2373,12 +2383,15 @@ async def add_link_command(update, context):
         except IndexError:
             pass # No proxy to use
 
-    results = []
     for url in urls:
-        result = await asyncio.to_thread(_validate_and_save_link_worker, url, session)
-        results.append(result)
-        await update.message.reply_text(result) # Send feedback immediately
-        await asyncio.sleep(0.5) # Avoid hitting rate limits
+        result_message = await asyncio.to_thread(_validate_and_save_link_worker, url, session)
+        
+        if len(result_message) > 4096:
+            with io.BytesIO(result_message.encode('utf-8')) as doc:
+                await update.message.reply_document(document=doc, filename=f"validation_{urlparse(url).path.strip('/')}.txt")
+        else:
+            await update.message.reply_text(result_message)
+        await asyncio.sleep(0.5)
 
     await update.message.reply_text("🏁 **Validation Complete!**")
 
@@ -2705,20 +2718,23 @@ async def sitem_command(update, context):
 
 async def button_handler(update, context):
     query = update.callback_query
-    await query.answer() # Answer immediately
     
     user_from_callback = query.from_user
     data = query.data.split('_')
     command = data[0]
     
-    # --- ADMIN-ONLY BUTTONS ---
-    if user_from_callback.id != ADMIN_ID:
-        # Allow users to stop their own task
-        if command == "stop" and data[1] == "mytask" and user_from_callback.id == int(data[2]):
-             pass # Allow this action
-        else:
-            await query.answer("You don't have permission for this action.", show_alert=True)
-            return
+    # --- ADMIN-ONLY BUTTONS CHECK ---
+    admin_commands = [
+        "setgate1mode", "setgate2mode", "setgate3mode", "setgate5mode",
+        "setgate8mode", "setgate9mode", "setgate10mode", "setgate11mode",
+        "setgate12mode", "setmultilinkmode", "delprx", "testprx", "dellink",
+        "delalllinks", "loot"
+    ]
+    if command in admin_commands and user_from_callback.id != ADMIN_ID:
+        await query.answer("You don't have permission for this action.", show_alert=True)
+        return
+    
+    await query.answer()
 
     # --- GATE MODE SELECTION ---
     gate_mode_callbacks = {
@@ -2734,19 +2750,16 @@ async def button_handler(update, context):
         mode = data[1] # 'charge' or 'live'
         set_mode_func(mode)
         set_active_gate(gate_id)
-        
         new_gate_name = get_formatted_gate_name(gate_id)
         await query.edit_message_text(f"✅ Switched payment gate to: **{new_gate_name}**")
         return
 
     # --- STOP TASK BUTTONS ---
     if command == "stop":
-        action = data[1] # 'task' or 'mytask'
+        action = data[1]
         target_user_id = int(data[2])
-
         is_allowed = (action == "task" and user_from_callback.id == ADMIN_ID) or \
                      (action == "mytask" and user_from_callback.id == target_user_id)
-
         if is_allowed:
             if target_user_id in CANCELLATION_EVENTS:
                 CANCELLATION_EVENTS[target_user_id].set()
@@ -2765,7 +2778,6 @@ async def button_handler(update, context):
             if 0 <= proxy_index < len(proxies_data['proxies']):
                 proxies_data['proxies'].pop(proxy_index)
                 save_proxies(proxies_data)
-                
                 new_keyboard = []
                 if proxies_data['proxies']:
                     for i, proxy in enumerate(proxies_data['proxies']):
@@ -2797,7 +2809,6 @@ async def button_handler(update, context):
                 deleted_link = links.pop(link_index)
                 save_multi_links(links)
                 await query.answer(f"Deleted: {deleted_link.get('url')}")
-                # Refresh the list
                 await delete_link_command(query, context)
             else:
                 await query.answer("Error: Link no longer exists.", show_alert=True)
@@ -2816,7 +2827,7 @@ async def button_handler(update, context):
             save_multi_links([])
             await query.edit_message_text("✅ All links have been deleted.")
         elif data[1] == "cancel":
-            await delete_link_command(query, context) # Go back to the list
+            await delete_link_command(query, context)
         return
 
     # --- LOOT FILE BUTTONS ---
@@ -2835,7 +2846,6 @@ async def button_handler(update, context):
                 await query.edit_message_text(f"✅ Sent the latest charged file from session `{latest_session}`.")
             else:
                 await query.edit_message_text(f"ℹ️ The latest check (`{latest_session}`) had no charged cards.")
-        # ... other loot actions ...
         elif action == "history":
             if not os.path.exists(user_log_dir):
                 await query.edit_message_text(f"No history for user `{target_user_id}`."); return
