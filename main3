@@ -2339,7 +2339,7 @@ def _validate_and_save_link_worker(url: str, session: requests.Session):
         if not isinstance(payload, dict):
             return f"❌ Invalid `payload` structure for `{cd}`.\n\n**Full Response (Request 1):**\n```json\n{pretty_data}\n```"
 
-        solution_uuid = data.get("solution_uuid") # This one is at the top level
+        solution_uuid = data.get("solution_uuid")
         account_uuid = payload.get("account_uuid")
         card_profile = None
         
@@ -2360,11 +2360,19 @@ def _validate_and_save_link_worker(url: str, session: requests.Session):
         test_card = "4000000000000002|12|29|123"
         cc, mes, ano, cvv = test_card.split('|')
         
+        link_data_for_test = {
+            "cd": cd,
+            "account_uuid": account_uuid,
+            "solution_uuid": solution_uuid,
+            "profile": card_profile
+        }
+        
         status, _, full_response, _ = check_card_multi_link(
             session, test_card, cc, mes, ano, cvv, {}, None, 
             get_mode_func=lambda: 'live',
             _get_charge_value=lambda _, __: 50,
-            custom_charge_amount=None
+            custom_charge_amount=None,
+            link_data_override=link_data_for_test
         )
         
         try:
