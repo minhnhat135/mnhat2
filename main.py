@@ -3136,7 +3136,7 @@ async def button_handler(update, context):
                 await query.answer("❌ Error: File not found.", show_alert=True)
 
 def main():
-    defaults = Defaults(parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+    defaults = Defaults(parse_mode=ParseMode.MARKDOWN)
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
     # General commands
