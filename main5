@@ -19,7 +19,7 @@ from datetime import datetime
 from pytz import timezone
 from urllib.parse import urlparse
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, User
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode, ChatAction
 from telegram.helpers import escape_markdown
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -1437,6 +1437,7 @@ async def _bin_command_worker(update, context):
         await update.message.reply_text("Please provide a valid BIN (6-8 digits).\nUsage: `/bin <bin_number>`")
         return
     
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     bin_to_check = context.args[0]
     msg = await update.message.reply_text(f"⏳ Checking BIN `{bin_to_check}`...")
 
@@ -1485,6 +1486,7 @@ async def bin_command(update, context):
 
 async def _process_single_check(update, context, line, custom_charge_amount=None):
     """Function to handle the check logic for both /cs and /cs<amount>"""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     msg = await update.message.reply_text("⏳ *Checking your card, please wait...*")
     start_time = time.time()
     try:
@@ -1755,6 +1757,7 @@ async def _multi_check_worker(update, context):
     if not text_content:
         await update.message.reply_text("Usage: Use `/multi` and then paste your card list on the next line."); return
 
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     lines = [line.strip() for line in text_content.splitlines() if line.strip()]
     total_lines = len(lines)
 
@@ -2048,6 +2051,7 @@ async def _mass_check_worker(update, context):
     document = update.message.document
     if not document.file_name.lower().endswith('.txt'): await update.message.reply_text("Only .txt files are accepted."); return
     
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     file = await context.bot.get_file(document.file_id)
     file_content = (await file.download_as_bytearray()).decode('utf-8')
     lines = [line for line in file_content.splitlines() if line.strip()]
@@ -2607,6 +2611,7 @@ async def _status_command_worker(update, context):
     """Worker function for the /status command."""
     if update.effective_user.id != ADMIN_ID: return
     
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     msg = await update.message.reply_text("⏳ Checking gate statuses... Please wait.")
     
     test_card = "5196032172122570|4|28|766" # A generic test card
@@ -3100,10 +3105,12 @@ async def test_proxy_command(update, context):
 # --- NEW: ASYNC TASK WRAPPERS FOR SITE CHECKER ---
 async def site_command(update, context):
     """Wrapper to run site check in a background task."""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     asyncio.create_task(original_site_command(update, context))
 
 async def sitem_command(update, context):
     """Wrapper to run multi-site check in a background task."""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     asyncio.create_task(original_sitem_command(update, context))
 
 async def button_handler(update, context):
