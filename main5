@@ -2624,30 +2624,53 @@ async def _status_command_worker(update, context):
             except Exception as e:
                 results[gid] = ("Check Error 🔴", "N/A", str(e))
 
-    final_message = "📊 **PAYMENT GATEWAY STATUS** 📊\n\n"
+    summary_message = "📊 **PAYMENT GATEWAY STATUS** 📊\n\n"
+    detailed_report = "📊 **DETAILED PAYMENT GATEWAY STATUS** 📊\n\n"
+
     for gid in sorted(results.keys(), key=lambda x: int(x)):
         status, transaction_id_info, response = results.get(gid, ("Unknown", "N/A", "No result"))
         
-        # Try to format the JSON response nicely
+        gate_name_full = get_formatted_gate_name(gid)
+        
+        # Build summary message
+        summary_message += f"**Gate {gid}:** {status}\n"
+
+        # Build detailed report
         try:
             parsed_json = json.loads(response)
             response_display = json.dumps(parsed_json, indent=2)
         except (json.JSONDecodeError, TypeError):
             response_display = str(response)
 
-        response_display = response_display[:1000] # Truncate long responses
-        
-        gate_name_full = get_formatted_gate_name(gid)
-
-        final_message += (
+        detailed_report += (
             f"**{gate_name_full}**\n"
             f"**Status:** {status}\n"
             f"**Request 1 (Tokenize):** `transactionId: {transaction_id_info}`\n"
             f"**Request 2 Response:**\n```json\n{response_display}\n```\n"
             f"----------------------------------------\n"
         )
+    
+    # Send the summary message, and if the detailed one is too long, send as a file.
+    try:
+        await msg.edit_text(summary_message)
+        if len(detailed_report) > 4096:
+            with io.BytesIO(detailed_report.encode('utf-8')) as file_to_send:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=file_to_send,
+                    filename="gate_status_details.txt",
+                    caption="Full detailed report."
+                )
+        else:
+            await update.message.reply_text(detailed_report)
+            
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass # It's okay if the summary hasn't changed
+        else:
+            logger.error(f"Error editing status message: {e}")
+            await msg.edit_text("An error occurred while displaying the status.")
 
-    await msg.edit_text(final_message)
 
 async def status_command(update, context):
     """(Tasked) Checks the operational status of the payment gateways."""
