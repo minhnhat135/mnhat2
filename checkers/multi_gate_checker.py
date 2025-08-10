@@ -107,7 +107,7 @@ def make_request_with_special_retry(session, method, url, gate_name, max_retries
 
 # --- MAIN CHECKER LOGIC ---
 
-def _check_card_generic(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, mode, charge_value, gate_name, gate_config):
+def check_card_multi_generic(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, mode, charge_value, gate_name, gate_config):
     """Internal function to check a card against a specific gate configuration."""
     try:
         # --- Generate random data based on gate config ---
@@ -191,35 +191,41 @@ def _check_card_generic(session, line, cc, mes, ano, cvv, bin_info, cancellation
         logger.error(f"Unknown error in Generic Checker for gate '{gate_name}' on line '{line}': {e}", exc_info=True)
         return 'error', line, f"[{gate_name}] System Error: {e}", bin_info
 
-def check_card_multi_gate(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_mode_func, custom_charge_amount=None):
+def check_card_multi_gate(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_mode_func, custom_charge_amount=None, specific_gate_name=None):
     """
     Main function for Multi-Gate mode. It randomly selects an available (non-banned) gate and runs the check.
+    If a specific_gate_name is provided, it will use that gate instead of a random one.
     """
     try:
         # --- MODIFIED: Use the reloaded module ---
-        all_gates = list(gate_configs_module.GATE_CONFIGS.keys())
-        banned_gates = get_banned_gates()
-        available_gates = [g for g in all_gates if g not in banned_gates]
+        all_gate_configs = gate_configs_module.GATE_CONFIGS
         
-        if not available_gates:
-            logger.warning("All multi-gates are currently banned. Reloading the list.")
-            unban_all_gates()
-            # --- MODIFIED: Use the reloaded module ---
-            all_gates = list(gate_configs_module.GATE_CONFIGS.keys())
-            available_gates = all_gates
+        if specific_gate_name:
+            if specific_gate_name not in all_gate_configs:
+                return 'error', line, f"Specified multi-gate '{specific_gate_name}' not found in configurations.", bin_info
+            random_gate_name = specific_gate_name
+        else:
+            all_gates = list(all_gate_configs.keys())
+            banned_gates = get_banned_gates()
+            available_gates = [g for g in all_gates if g not in banned_gates]
+            
             if not available_gates:
-                 return 'error', line, "No gates defined in gate_configurations.py", bin_info
+                logger.warning("All multi-gates are currently banned. Reloading the list.")
+                unban_all_gates()
+                available_gates = all_gates
+                if not available_gates:
+                     return 'error', line, "No gates defined in gate_configurations.py", bin_info
 
-        random_gate_name = random.choice(available_gates)
-        # --- MODIFIED: Use the reloaded module ---
-        gate_config = gate_configs_module.GATE_CONFIGS[random_gate_name]
+            random_gate_name = random.choice(available_gates)
+
+        gate_config = all_gate_configs[random_gate_name]
         
         mode = get_mode_func() 
         charge_value = custom_charge_amount if custom_charge_amount is not None else 50 # Default charge 0.50
         
-        logger.info(f"Running card on Multi-Gate mode, randomly selected: {random_gate_name}")
+        logger.info(f"Running card on Multi-Gate mode, selected gate: {random_gate_name}")
         
-        return _check_card_generic(
+        return check_card_multi_generic(
             session, line, cc, mes, ano, cvv, bin_info, cancellation_event, 
             mode, charge_value, random_gate_name, gate_config
         )
