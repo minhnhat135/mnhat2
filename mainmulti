@@ -3408,7 +3408,13 @@ async def _check_status_multi_worker(update, context):
     """Worker function for the /checkstatusmulti command."""
     if update.effective_user.id != ADMIN_ID: return
 
-    msg = await update.message.reply_text("⏳ Checking status of all configured links... This may take a moment.")
+    # --- MODIFIED: Check proxy status to display in the initial message ---
+    proxy_config = load_proxies()
+    proxy_status_text = "ENABLED" if proxy_config.get("enabled") else "DISABLED"
+    msg_text = f"⏳ Checking status of all configured links... (Proxy: {proxy_status_text})"
+    # --- END MODIFICATION ---
+
+    msg = await update.message.reply_text(msg_text)
     stop_typing_event = asyncio.Event()
     typing_task = asyncio.create_task(_send_typing_periodically(context, update.effective_chat.id, stop_typing_event))
     
@@ -3424,14 +3430,32 @@ async def _check_status_multi_worker(update, context):
         all_gate_names = list(gate_configs.keys())
         results = {}
         
+        # --- MODIFIED: The helper function now accepts proxy config and applies it ---
         def check_single_gate(gate_name):
             session = requests.Session()
+            
+            # --- NEW: PROXY LOGIC INTEGRATED HERE ---
+            # This logic is copied from the main check_card function
+            proxy_config = load_proxies()
+            if proxy_config.get("enabled") and proxy_config.get("proxies"):
+                try:
+                    proxy_str = random.choice(proxy_config["proxies"])
+                    proxy_dict = _format_proxy_for_requests(proxy_str)
+                    if proxy_dict:
+                        session.proxies = proxy_dict
+                        logger.info(f"checkstatusmulti for gate '{gate_name}' is using proxy.")
+                except IndexError:
+                    logger.warning(f"Proxy is enabled for checkstatusmulti, but the list is empty.")
+                    pass # No proxy to use
+            # --- END PROXY LOGIC ---
+
             gate_config = gate_configs[gate_name]
             # We will perform a 'live' check as it's safer and sufficient for a status check
             status, _, response, _ = check_card_multi_generic(
                 session, test_card_line, cc, mes, ano, cvv, {}, None, 'live', 50, gate_name, gate_config
             )
             return gate_name, status, response
+        # --- END MODIFICATION ---
 
         with ThreadPoolExecutor(max_workers=min(10, len(all_gate_names))) as executor:
             future_to_gate = {executor.submit(check_single_gate, name): name for name in all_gate_names}
