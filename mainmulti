@@ -3996,7 +3996,7 @@ async def sitem_command_wrapper(update, context):
 def main():
     """Start the bot."""
     # Set default parse mode for the application
-    defaults = Defaults(parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+    defaults = Defaults(parse_mode=ParseMode.MARKDOWN)
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
     # --- USER & PUBLIC COMMANDS ---
