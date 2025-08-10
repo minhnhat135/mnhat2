@@ -3866,7 +3866,7 @@ async def off_proxy_command(update, context):
 
 def main():
     """Start the bot."""
-    defaults = Defaults(parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+    defaults = Defaults(parse_mode=ParseMode.MARKDOWN)
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
     # --- User Commands ---
