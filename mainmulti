@@ -3181,20 +3181,34 @@ async def unltistatus_command(update, context):
     all_gates = list(GATE_CONFIGS.keys())
     banned_gates = get_banned_gates()
     
-    message = "📊 **MULTI-GATE SYSTEM STATUS** 📊\n\n"
+    message = "📊 **đọc" được định dạng bạn yêu cầu.
+4.  **Nguyên nhân:** Lỗi này xảy ra bên trong hàm `unltistatus_command`. Khi hàm này lấy danh sách tên các gate từ file `gate_configurations.py`, một trong số các tên đó có chứa ký tự đặc biệt (víMULTI-GATE SYSTEM STATUS** 📊\n\n"
     message += f"**Total Gates Configured:** `{len(all_gates)}`\n"
     message += f"**Currently Banned Gates:** `{len(banned_gates)}`\n\n"
-    
+     dụ: dấu gạch dưới `_`, dấu `*`, dấu `-`...) khiến cho cú pháp Markdown của Telegram bị lỗi khi bot cố gắng in ra tên gate đó.
+
+### Cách khắc phục
+
+Để giải quyết vấn đề này, chúng ta cần "vô hiệu hóa" các ký tự đặc biệt trong tên gate
     if not all_gates:
         message += "No gates found in `gate_configurations.py`."
         await msg.edit_text(message)
         return
         
     for gate_name in sorted(all_gates):
+        # Vô hiệu hóa các ký tự đặc trước khi gửi tin nhắn. Tôi sẽ cập nhật lại hàm `unltistatus_command` để xử lý việc này.
+
+Bạn vui lòng tìm hàm `unltistatus_command` cũ trong file `mainmulti` của bạn và **thay thế toàn bộ hàm đó** bằng phiên bản đã sửa lỗi biệt trong tên gate để tránh lỗi Markdown
+        safe_gate_name = escape_markdown(gate_name)
         status = "🔴 BANNED" if gate_name in banned_gates else "🟢 Active"
-        message += f"- **{gate_name}:** {status}\n"
+        message += f"- **{safe_gate_name}:** {status}\n"
         
-    await msg.edit_text(message)
+    try:
+        await msg.edit_text(message)
+    except telegram.error.BadRequest as e:
+        logger.error(f"Error sending unltistatus report: {e}")
+        error_text = f"An error occurred while generating the report: {e}\n\nThis is likely due to an unclosed markdown character in a gate name. Please check your `gate_configurations.py` file."
+        await msg.edit_text(error_text)
 
 
 async def set_gate_range_command(update, context):
