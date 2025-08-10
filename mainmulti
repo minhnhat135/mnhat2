@@ -3671,4 +3671,99 @@ async def button_handler(update, context):
             for session_ts in sessions:
                 summary_path = os.path.join(user_log_dir, session_ts, "summary.json")
                 if os.path.exists(summary_path):
-                    summary
+                    summary = load_json_file(summary_path)
+                    counts = summary.get('counts', {})
+                    try: dt_obj = datetime.strptime(session_ts, "%Y%m%d-%H%M%S"); readable_ts = dt_obj.strftime("%d/%m/%Y %H:%M")
+                    except ValueError: readable_ts = session_ts
+                    button_text = f"🕒 {readable_ts} - ✅{counts.get('success',0)} ❌{counts.get('decline',0)}"
+                    keyboard.append([InlineKeyboardButton(button_text, callback_data=f"loot_session_{target_user_id}_{session_ts}")])
+            
+            keyboard.append([InlineKeyboardButton("« Back to Main Menu", callback_data=f"loot_mainmenu_{target_user_id}")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"📜 **Check history for user `{target_user_id}`:**", reply_markup=reply_markup)
+
+        elif action == "session":
+            _, _, target_user_id, session_ts = data
+            session_dir = os.path.join(LOG_DIR, target_user_id, session_ts)
+            files = [f for f in os.listdir(session_dir) if f.endswith('.txt')] if os.path.exists(session_dir) else []
+            if not files:
+                await query.edit_message_text("This session has no result files."); return
+            keyboard = []
+            for filename in files:
+                keyboard.append([InlineKeyboardButton(f"Download {filename}", callback_data=f"loot_getfile_{target_user_id}_{session_ts}_{filename}")])
+            keyboard.append([InlineKeyboardButton("« Back to History", callback_data=f"loot_history_{target_user_id}")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"Select a file to download from session `{session_ts}`:", reply_markup=reply_markup)
+
+        elif action == "getfile":
+            _, _, target_user_id, session_ts, filename = data
+            file_path = os.path.join(LOG_DIR, target_user_id, session_ts, filename)
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as doc: await context.bot.send_document(chat_id=query.from_user.id, document=doc)
+                await query.answer(f"Sent file {filename}")
+            else:
+                await query.answer("❌ Error: File not found.", show_alert=True)
+
+def main():
+    defaults = Defaults(parse_mode=ParseMode.MARKDOWN)
+    application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
+
+    # General commands
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("info", info))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("stop", stop_command))
+    
+    # Admin commands
+    application.add_handler(CommandHandler("add", add_user))
+    application.add_handler(CommandHandler("ban", ban_user))
+    application.add_handler(CommandHandler("show", show_users))
+    application.add_handler(CommandHandler("addlimit", add_limit_command))
+    application.add_handler(CommandHandler("addlimitmulti", add_multi_limit_command))
+    application.add_handler(CommandHandler("showcheck", show_check_command))
+    application.add_handler(CommandHandler("lootfile", loot_file_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("gate", gate_command))
+    application.add_handler(CommandHandler("setgate", set_gate_range_command))
+    application.add_handler(CommandHandler("on", turn_bot_on))
+    application.add_handler(CommandHandler("off", turn_bot_off))
+    application.add_handler(CommandHandler("send", send_message_command))
+    application.add_handler(CommandHandler("sendall", send_all_command))
+    application.add_handler(CommandHandler("active", active_checks_command)) 
+    # --- NEW ADMIN COMMANDS ---
+    application.add_handler(CommandHandler("unti", unti_command))
+    application.add_handler(CommandHandler("unltistatus", unltistatus_command))
+
+    # PROXY COMMANDS
+    application.add_handler(CommandHandler("onprx", on_proxy_command))
+    application.add_handler(CommandHandler("offprx", off_proxy_command))
+    application.add_handler(CommandHandler("addprx", add_proxy_command))
+    application.add_handler(CommandHandler("deleteprx", delete_proxy_command))
+    application.add_handler(CommandHandler("testprx", test_proxy_command))
+    
+    # Check commands
+    # Prioritize handler for admin's /cs<amount>
+    application.add_handler(MessageHandler(filters.Regex(r'^/cs(\d+)'), cs_custom_amount_command))
+    # Handler for regular /cs
+    application.add_handler(CommandHandler("cs", cs_command))
+    application.add_handler(CommandHandler("bin", bin_command))
+    application.add_handler(CommandHandler("multi", multi_check_command))
+    application.add_handler(MessageHandler(filters.Document.TEXT & filters.CaptionRegex(r'^/mass(\d*)'), mass_check_handler))
+    
+    # Site Checker commands (imported from site_checker.py and wrapped)
+    application.add_handler(CommandHandler("site", site_command))
+    application.add_handler(CommandHandler("sitem", sitem_command))
+
+    # Button handler
+    application.add_handler(CallbackQueryHandler(button_handler))
+    
+    logger.info(f"Bot is running with Admin ID: {ADMIN_ID}")
+    
+    
+    application.run_polling()
+
+# ==================================================================
+# == THIS IS THE MOST IMPORTANT PART THAT MAKES THE SCRIPT RUN! ==
+# ==================================================================
+if __name__ == '__main__':
+    main()
