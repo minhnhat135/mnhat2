@@ -2036,14 +2036,17 @@ async def _multi_check_worker(update, context):
                 try:
                     status, original_line, full_response, bin_info, had_persistent_error = future.result()
                     
+                    # --- FIX: Sanitize response and bin_info to prevent Markdown errors ---
+                    safe_full_response = str(full_response).replace('`', "'")
+                    
                     if user.id != ADMIN_ID and status in ['error', 'unknown']:
-                        debug_info = f"🐞 DEBUG ALERT (/multi from user {user.id}):\nCard: {original_line}\nResponse: {str(full_response)[:3500]}"
+                        debug_info = f"🐞 DEBUG ALERT (/multi from user {user.id}):\nCard: {original_line}\nResponse: {safe_full_response[:3500]}"
                         coro = context.bot.send_message(chat_id=ADMIN_ID, text=debug_info)
                         asyncio.run_coroutine_threadsafe(coro, loop)
 
                     if had_persistent_error:
                         persistent_http_error_count += 1
-                        results['error'].append(f"❗️ `{original_line}` | Persistent HTTP error: {full_response}")
+                        results['error'].append(f"❗️ `{original_line}` | Persistent HTTP error: {safe_full_response}")
                         # Stop if too many errors
                         proxy_config = load_proxies()
                         if proxy_config.get("enabled") and persistent_http_error_count > 10:
@@ -2071,7 +2074,8 @@ async def _multi_check_worker(update, context):
 
                     bin_parts = [p for p in [bank, brand, card_type, level, country_name] if p and p != 'N/A']
                     bin_str = " - ".join(bin_parts)
-                    # --- END MODIFICATION ---
+                    # --- FIX: Sanitize bin_str as well ---
+                    safe_bin_str = bin_str.replace('`', "'")
 
                     result_line = ""
                     if status == 'decline':
@@ -2080,12 +2084,12 @@ async def _multi_check_worker(update, context):
                         elif full_response == 'EXPIRED_CARD_DECLINE': result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Expired)`"
                         elif 'INVALID_CARDNUMBER_DECLINE' in full_response: result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Invalid Card Number)`"
                         elif full_response == 'CARD_NOT_ALLOWED_DECLINE': result_line = f"{status_icons['decline']} `{original_line}` | `DECLINED (Not Supported)`"
-                        else: result_line = f"{status_icons['decline']} `{original_line}` | {full_response}"
+                        else: result_line = f"{status_icons['decline']} `{original_line}` | {safe_full_response}"
                     elif status == 'live_success':
-                        result_line = f"{status_icons['live_success']} `{original_line}` | {full_response} | `{bin_str}`"
+                        result_line = f"{status_icons['live_success']} `{original_line}` | {safe_full_response} | `{safe_bin_str}`"
                     elif status == 'success':
-                        result_line = f"{status_icons['success']} `{original_line}` | {full_response} | `{bin_str}`"
-                    elif status == 'invalid_format': result_line = f"{status_icons[status]} `{original_line}` | Reason: {str(full_response)[:50]}" 
+                        result_line = f"{status_icons['success']} `{original_line}` | {safe_full_response} | `{safe_bin_str}`"
+                    elif status == 'invalid_format': result_line = f"{status_icons[status]} `{original_line}` | Reason: {str(safe_full_response)[:50]}" 
                     elif status == 'cancelled': continue
                     elif status == 'error' and had_persistent_error: # Already handled
                         continue
@@ -2093,7 +2097,7 @@ async def _multi_check_worker(update, context):
                         if status == 'unknown':
                             result_line = f"{status_icons.get(status, '❔')} `{original_line}` | Unknown"
                         else: # For 'custom' and other non-persistent errors
-                            result_line = f"{status_icons.get(status, '❔')} `{original_line}` | {full_response} | `{bin_str}`"
+                            result_line = f"{status_icons.get(status, '❔')} `{original_line}` | {safe_full_response} | `{safe_bin_str}`"
 
                     if result_line: results[status].append(result_line)
 
@@ -2245,7 +2249,9 @@ async def _multi_check_worker(update, context):
 
     except Exception as e:
         logger.error(f"Error in /multi: {e}", exc_info=True)
-        await status_message.edit_text(f"⛔️ **Critical Error!**\n```\n{str(e).replace('`', '')}\n```", reply_markup=None)
+        # --- FIX: Sanitize error message before sending ---
+        safe_error_message = str(e).replace('`', "'").replace('*', '').replace('_', '')
+        await status_message.edit_text(f"⛔️ **Critical Error!**\n```\n{safe_error_message}\n```", reply_markup=None)
     finally:
         stop_typing_event.set()
         await typing_task
