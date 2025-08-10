@@ -3921,17 +3921,22 @@ async def _test_proxy_command_worker(update, context):
     proxy_config["proxies"] = live_proxies
     save_proxies(proxy_config)
     
+    # --- FIX START: Avoid using backslash in f-string expression ---
+    live_proxies_str = '\n'.join(live_proxies) if live_proxies else 'None'
+    dead_proxies_str = '\n'.join(dead_proxies) if dead_proxies else 'None'
+
     result_message = (
         f"**✅ Live Proxies: ({len(live_proxies)})**\n"
         f"```\n"
-        f"{'\n'.join(live_proxies) if live_proxies else 'None'}\n"
+        f"{live_proxies_str}\n"
         f"```\n\n"
         f"**❌ Dead Proxies: ({len(dead_proxies)})**\n"
         f"```\n"
-        f"{'\n'.join(dead_proxies) if dead_proxies else 'None'}\n"
+        f"{dead_proxies_str}\n"
         f"```\n\n"
         f"ℹ️ The proxy list has been updated to only contain live proxies."
     )
+    # --- FIX END ---
     
     if len(result_message) > 4096:
         with io.BytesIO(result_message.encode('utf-8')) as doc:
