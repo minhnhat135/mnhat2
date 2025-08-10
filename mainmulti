@@ -52,7 +52,7 @@ import gate_configurations as gate_configs_module
 
 
 # --- CONFIGURATION ---
-BOT_TOKEN = "YOUR_BOT_TOKEN" #<-- THAY TOKEN CỦA BẠN VÀO ĐÂY
+BOT_TOKEN = "8383293948:AAEDVbBV05dXWHNZXod3RRJjmwqc2N4xsjQ" #<-- THAY TOKEN CỦA BẠN VÀO ĐÂY
 ADMIN_ID = 5127429005 #<-- THAY ID ADMIN CỦA BẠN VÀO ĐÂY
 ADMIN_USERNAME = "@startsuttdow" #<-- THAY USERNAME ADMIN CỦA BẠN VÀO ĐÂY
 
