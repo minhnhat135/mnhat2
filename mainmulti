@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # from checkers.gate17_checker import check_card_gate17
 # from checkers.gate18_checker import check_card_gate18
 # --- NEW: IMPORT MULTI-GATE CHECKER ---
-from multi_gate_checker import check_card_multi_gate, _perform_single_request
+from checkers.multi_gate_checker import check_card_multi_gate, _perform_single_request
 # --- MODIFIED: Import module to allow reloading ---
 import gate_configurations as gate_configs_module
 
