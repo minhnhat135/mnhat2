@@ -137,5 +137,25 @@ GATE_CONFIGS = {
             "profile":"23c782a1-d4d6-4499-bbb8-9bcd7af24648",
             "return_url":"https://donate.raisenow.io/hddtf?lng=fr&rnw-view=payment_result"
         }
+    },
+    "link_8": {
+        "formId": "250810202321798891",
+        "currency": "EUR",
+        "name_length_range": (15, 30),
+        "email_config": {"text_length_range": (20, 30), "append_digits": 2},
+        "payload": {
+            "account_uuid":"14bd66de-7d3a-4d31-98cd-072193050b5f","test_mode":False,"create_supporter":False,
+            "supporter":{"locale":"de","salutation":"ms","first_name":"{{first_name}}","last_name":"{{last_name}}"},
+            "raisenow_parameters":{
+                "analytics":{"channel":"paylink","preselected_amount":"5000","suggested_amounts":"[5000,10000,15000]","user_agent":"{{user_agent}}"},
+                "solution":{"uuid":"fc42c2dd-c128-4f9e-bc99-fb0bbda90355","name":"Spenden Sie für hilfsbedürftige Kinder in Deutschland","type":"donate"},
+                "product":{"name":"tamaro","source_url":"https://donate.raisenow.io/rznkh?lng=de","uuid":"self-service","version":"2.16.0"},
+                "integration":{"donation_receipt_requested":"false"}
+            },
+            "custom_parameters":{"campaign_id":"Spenden Sie für hilfsbedürftige Kinder in Deutschland","campaign_subid":""},
+            "payment_information":{"brand_code":"eca","cardholder":"{{cardholder}}","expiry_month":"{{expiry_month}}","expiry_year":"{{expiry_year}}","transaction_id":"{{transaction_id}}"},
+            "profile":"30b982d3-d984-4ed7-bd0d-c23197edfd1c",
+            "return_url":"https://donate.raisenow.io/rznkh?lng=de&rnw-view=payment_result"
+        }
     }
 }
