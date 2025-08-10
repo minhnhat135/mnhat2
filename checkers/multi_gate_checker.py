@@ -5,9 +5,13 @@ import random
 import string
 import logging
 import threading
+import importlib
 
-# Import the central gate configurations
-from gate_configurations import GATE_CONFIGS
+# --- MODIFIED: Import the module to allow reloading ---
+import gate_configurations as gate_configs_module
+# Reload the module on initial import to ensure it's fresh
+importlib.reload(gate_configs_module)
+
 
 logger = logging.getLogger(__name__)
 
@@ -192,19 +196,23 @@ def check_card_multi_gate(session, line, cc, mes, ano, cvv, bin_info, cancellati
     Main function for Multi-Gate mode. It randomly selects an available (non-banned) gate and runs the check.
     """
     try:
-        all_gates = list(GATE_CONFIGS.keys())
+        # --- MODIFIED: Use the reloaded module ---
+        all_gates = list(gate_configs_module.GATE_CONFIGS.keys())
         banned_gates = get_banned_gates()
         available_gates = [g for g in all_gates if g not in banned_gates]
         
         if not available_gates:
             logger.warning("All multi-gates are currently banned. Reloading the list.")
             unban_all_gates()
+            # --- MODIFIED: Use the reloaded module ---
+            all_gates = list(gate_configs_module.GATE_CONFIGS.keys())
             available_gates = all_gates
             if not available_gates:
                  return 'error', line, "No gates defined in gate_configurations.py", bin_info
 
         random_gate_name = random.choice(available_gates)
-        gate_config = GATE_CONFIGS[random_gate_name]
+        # --- MODIFIED: Use the reloaded module ---
+        gate_config = gate_configs_module.GATE_CONFIGS[random_gate_name]
         
         mode = get_mode_func() 
         charge_value = custom_charge_amount if custom_charge_amount is not None else 50 # Default charge 0.50
