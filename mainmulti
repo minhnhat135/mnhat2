@@ -3836,7 +3836,8 @@ async def _test_proxy_command_worker(update, context):
                 dead_proxies.append(f"❌ `{p}` | Reason: `{reason}`")
 
     # Update the stored list with only live proxies
-    live_proxy_strings = [p.strip('`').split('`')[0] for p in live_proxies]
+    # --- FIX: Correctly extract the proxy string from the formatted message ---
+    live_proxy_strings = [p.split('`')[1] for p in live_proxies]
     proxy_config["proxies"] = live_proxy_strings
     save_proxies(proxy_config)
 
@@ -3865,20 +3866,57 @@ async def test_proxy_command(update, context):
     asyncio.create_task(_test_proxy_command_worker(update, context))
 
 async def delete_proxy_command(update, context):
-    """Shows a list of proxies with delete buttons."""
+    """Shows a list of proxies and handles deletion via reply."""
     if update.effective_user.id != ADMIN_ID: return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    
+
+    # Check if the message is a reply to the bot's proxy list
+    if update.message.reply_to_message and "Select a proxy to delete by replying with its number" in update.message.reply_to_message.text:
+        proxy_config = load_proxies()
+        try:
+            # The user replied with a number.
+            index_to_delete = int(update.message.text.strip()) - 1
+            if 0 <= index_to_delete < len(proxy_config["proxies"]):
+                proxy_to_delete = proxy_config["proxies"].pop(index_to_delete)
+                save_proxies(proxy_config)
+                await update.message.reply_text(f"✅ Proxy `{proxy_to_delete}` has been deleted.")
+
+                # Show the updated list if it's not empty
+                if proxy_config["proxies"]:
+                    # Create a new update-like object to call the function again
+                    # This avoids complex state management
+                    class MockUpdate:
+                        def __init__(self, message):
+                            self.message = message
+                    class MockMessage:
+                        def __init__(self, chat, from_user):
+                            self.reply_to_message = None
+                            self.chat = chat
+                            self.from_user = from_user
+                        async def reply_text(self, *args, **kwargs):
+                             return await context.bot.send_message(chat_id=self.chat.id, *args, **kwargs)
+                    
+                    mock_update = MockUpdate(MockMessage(update.message.chat, update.message.from_user))
+                    await delete_proxy_command(mock_update, context)
+                else:
+                    await update.message.reply_text("📭 The proxy list is now empty.")
+            else:
+                await update.message.reply_text("❌ Invalid number. Please reply with a number from the list.")
+        except (ValueError, IndexError):
+            await update.message.reply_text("❌ That's not a valid number. Please reply with the number of the proxy you want to delete.")
+        return
+
+    # If it's not a reply, show the list of proxies.
     proxy_config = load_proxies()
     if not proxy_config["proxies"]:
         await update.message.reply_text("📭 The proxy list is empty."); return
 
-    keyboard = []
-    for p in proxy_config["proxies"]:
-        keyboard.append([InlineKeyboardButton(p, callback_data=f"deleteprx_{p}")])
+    message_lines = ["**Select a proxy to delete by replying with its number:**\n"]
+    for i, p in enumerate(proxy_config["proxies"], 1):
+        message_lines.append(f"{i}. `{p}`")
     
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Select a proxy to delete:", reply_markup=reply_markup)
+    # Use force_reply to prompt the user to reply to this specific message
+    await update.message.reply_text("\n".join(message_lines), reply_markup=telegram.ForceReply(selective=True, input_field_placeholder="Reply with a number..."))
 
 async def toggle_proxy_command(update, context, enable: bool):
     """Enables or disables proxy usage."""
