@@ -3441,64 +3441,44 @@ async def _check_status_multi_worker(update, context):
     stop_typing_event = asyncio.Event()
     typing_task = asyncio.create_task(_send_typing_periodically(context, update.effective_chat.id, stop_typing_event))
     
-    test_card_line = "5168155124645796|9|2028|462"
+    # Using a known good test card for status checks
+    test_card_line = "4417707719990590|12|2028|123" 
     cc, mes, ano, cvv = test_card_line.split('|')
     
     try:
-        gate_configs = gate_configs_module.GATE_CONFIGS
+        gate_configs = get_latest_gate_configs()
         if not gate_configs:
             await msg.edit_text("No gates found in `gate_configurations.py`.")
+            stop_typing_event.set()
+            await typing_task
             return
 
         all_gate_names = list(gate_configs.keys())
         results = {}
         
-        # --- MODIFIED: Added retry logic for connection errors ---
-        def check_single_gate(gate_name):
+        def check_single_gate_status(gate_name):
             session = requests.Session()
             
-            proxy_config = load_proxies()
-            if proxy_config.get("enabled") and proxy_config.get("proxies"):
+            # Apply proxy if enabled
+            proxy_config_local = load_proxies()
+            if proxy_config_local.get("enabled") and proxy_config_local.get("proxies"):
                 try:
-                    proxy_str = random.choice(proxy_config["proxies"])
+                    proxy_str = random.choice(proxy_config_local["proxies"])
                     proxy_dict = _format_proxy_for_requests(proxy_str)
                     if proxy_dict:
                         session.proxies = proxy_dict
-                        logger.info(f"checkstatusmulti for gate '{gate_name}' is using proxy.")
                 except IndexError:
-                    logger.warning(f"Proxy is enabled for checkstatusmulti, but the list is empty.")
                     pass
             
             gate_config = gate_configs[gate_name]
             
-            # --- NEW: RETRY LOGIC IMPLEMENTED HERE ---
-            max_retries = 3
-            for attempt in range(max_retries):
-                status, _, response, _ = check_card_multi_generic(
-                    session, test_card_line, cc, mes, ano, cvv, {}, None, 'live', 50, gate_name, gate_config
-                )
-
-                # Check if the error is a type that we should retry
-                is_retryable_error = (
-                    status == 'error' and 
-                    response and 
-                    ("HTTP Error" in str(response) or "Connection Error" in str(response) or "Proxy Error" in str(response))
-                )
-
-                # If it's a retryable error and not the last attempt, then continue to the next loop
-                if is_retryable_error and attempt < max_retries - 1:
-                    logger.warning(f"Gate '{gate_name}' status check failed (Attempt {attempt + 1}/{max_retries}): {response}. Retrying...")
-                    time.sleep(1)  # Wait for 1 second before retrying
-                    continue
-                else:
-                    # If it's not a retryable error, or if it's the last attempt, break the loop
-                    break
-            # --- END RETRY LOGIC ---
-
+            status, _, response, _ = check_card_multi_generic(
+                session, test_card_line, cc, mes, ano, cvv, {}, None, 'live', 50, gate_name, gate_config
+            )
             return gate_name, status, response
 
         with ThreadPoolExecutor(max_workers=min(10, len(all_gate_names))) as executor:
-            future_to_gate = {executor.submit(check_single_gate, name): name for name in all_gate_names}
+            future_to_gate = {executor.submit(check_single_gate_status, name): name for name in all_gate_names}
             for future in as_completed(future_to_gate):
                 try:
                     g_name, g_status, g_response = future.result()
@@ -3511,14 +3491,22 @@ async def _check_status_multi_worker(update, context):
         
         for gate_name in sorted(results.keys()):
             status, response = results[gate_name]
-            status_icon = "❔ UNKNOWN"
-
-            if status == 'gate_dead':
-                status_icon = "🔴 DEAD"
-            elif status == 'error' and (not response or "HTTP Error" in str(response) or "Connection Error" in str(response) or "Proxy Error" in str(response)):
-                status_icon = "🔴 DEAD"
-            elif response:
+            
+            # --- FIXED: Corrected logic to prioritize DEAD statuses ---
+            # 1. Check for explicit DEAD signals first.
+            if status == 'gate_dead' or '403' in str(response):
+                status_icon = "🔴 DEAD (403 Forbidden)"
+            elif status == 'error':
+                status_icon = f"🔴 DEAD (Error)"
+            
+            # 2. If it's not dead, check for LIVE signals.
+            #    A definitive response (success, decline, 3D) means the gate is reachable.
+            elif status in ['live_success', 'success', 'decline', 'custom']:
                 status_icon = "✅ LIVE"
+            
+            # 3. If none of the above, it's unknown.
+            else:
+                status_icon = "❔ UNKNOWN"
             
             summary_message += f"**{escape_markdown(gate_name, version=2)}:** {status_icon}\n"
         
