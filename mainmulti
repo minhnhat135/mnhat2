@@ -29,6 +29,7 @@ from site_checker import site_command as original_site_command
 from site_checker import sitem_command as original_sitem_command
 
 # --- NEW: IMPORT GATE CHECKERS FROM THE 'checkers' DIRECTORY ---
+from checkers.gate_base_checker import check_card_multi_generic
 from checkers.gate3_checker import check_card_gate3
 from checkers.gate4_checker import check_card_gate4
 from checkers.gate5_checker import check_card_gate5
@@ -45,10 +46,22 @@ from checkers.gate15_checker import check_card_gate15
 from checkers.gate16_checker import check_card_gate16
 from checkers.gate17_checker import check_card_gate17
 from checkers.gate18_checker import check_card_gate18
-# --- NEW: IMPORT MULTI-GATE CHECKER ---
-from checkers.multi_gate_checker import check_card_multi_gate, get_banned_gates, unban_all_gates, check_card_multi_generic
+
+# --- FIXED: Correct and complete import from multi_gate_checker ---
+from checkers.multi_gate_checker import (
+    check_card_multi_gate, 
+    get_banned_gates, 
+    unban_all_gates, 
+    get_latest_gate_configs
+)
+
 # --- MODIFIED: Import module to allow reloading ---
-import gate_configurations as gate_configs_module
+try:
+    import gate_configurations as gate_configs_module
+except ImportError:
+    with open("gate_configurations.py", "w") as f:
+        f.write("GATE_CONFIGS = {}\n")
+    import gate_configurations as gate_configs_module
 
 
 # --- CONFIGURATION ---
