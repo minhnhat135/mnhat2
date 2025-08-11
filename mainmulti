@@ -3996,7 +3996,7 @@ async def sitem_command_wrapper(update, context):
 def main():
     """Start the bot."""
     # Set default parse mode for the application
-    defaults = Defaults(parse_mode=ParseMode.MARKDOWN)
+    defaults = Defaults(parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
     # --- USER & PUBLIC COMMANDS ---
@@ -4006,7 +4006,15 @@ def main():
     application.add_handler(CommandHandler("bin", bin_command))
     application.add_handler(CommandHandler("cs", cs_command))
     application.add_handler(CommandHandler("multi", multi_check_command))
-    application.add_handler(CommandHandler("mass", mass_check_handler))
+    
+    # --- FIXED: Use a dedicated MessageHandler for the /mass command with a file ---
+    # This handler specifically looks for a .txt document with a caption starting with /mass
+    mass_handler = MessageHandler(
+        filters.Document.TXT & filters.CaptionRegex(r'^/mass'), 
+        mass_check_handler
+    )
+    application.add_handler(mass_handler)
+
     application.add_handler(CommandHandler("stop", stop_command))
     # --- NEW: Site checker commands ---
     application.add_handler(CommandHandler("site", site_command_wrapper))
@@ -4035,7 +4043,14 @@ def main():
     application.add_handler(CommandHandler("checkstatusmulti", check_status_multi_command))
     application.add_handler(CommandHandler("reloadcfg", reload_config_command))
     application.add_handler(CommandHandler("csmulti", csmulti_command))
-    application.add_handler(CommandHandler("massmulti", massmulti_command))
+    
+    # --- FIXED: Use a dedicated MessageHandler for the /massmulti command ---
+    massmulti_handler = MessageHandler(
+        filters.Document.TXT & filters.CaptionRegex(r'^/massmulti'), 
+        massmulti_command
+    )
+    application.add_handler(massmulti_handler)
+
     application.add_handler(CommandHandler("multiv2", multiv2_command))
     
     # --- PROXY COMMANDS (Admin) ---
