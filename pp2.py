@@ -13,7 +13,8 @@ from urllib.parse import urlencode, quote
 import requests
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.error import BadRequest
+# <<< SỬA LỖI: Thêm import TimedOut
+from telegram.error import BadRequest, TimedOut
 
 # --- Cấu hình Bot và Ứng dụng ---
 # THAY THẾ TOKEN CỦA BẠN VÀO ĐÂY
@@ -454,10 +455,11 @@ async def run_concurrent_mass_check(update: Update, context: ContextTypes.DEFAUL
                     parse_mode='Markdown'
                 )
                 last_update_time = current_time
-            except BadRequest as e:
-                # Bỏ qua lỗi nếu tin nhắn không thay đổi
+            # <<< SỬA LỖI: Thêm TimedOut vào đây để bắt lỗi hết thời gian chờ
+            except (BadRequest, TimedOut) as e:
+                # Bỏ qua lỗi nếu tin nhắn không thay đổi hoặc bị timeout
                 if "Message is not modified" not in str(e):
-                    logger.warning(f"Không thể chỉnh sửa tin nhắn trạng thái: {e}")
+                    logger.warning(f"Không thể chỉnh sửa tin nhắn trạng thái (bỏ qua): {e}")
     
     # Tạo file kết quả
     final_results_text = f"--- KẾT QUẢ CHECK HÀNG LOẠT ---\nTổng số thẻ: {total_cards}\n\n"
@@ -517,12 +519,10 @@ def format_result_message(result_dict, current=None, total=None, is_for_file=Fal
     
     bin_info_dict = result_dict.get('bin_info', {})
     if bin_info_dict and bin_info_dict.get('success'):
-        # --- FIX LỖI TẠI ĐÂY ---
         # Lấy giá trị và đảm bảo nó không phải là None trước khi dùng .upper()
         brand_str = str(bin_info_dict.get('brand') or 'N/A').upper()
         type_str = str(bin_info_dict.get('type') or 'N/A').upper()
         level_str = str(bin_info_dict.get('level') or 'N/A').upper()
-        # --- KẾT THÚC SỬA LỖI ---
         
         bin_details = (
             f"ℹ️ Thông tin BIN:\n"
