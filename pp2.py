@@ -5,7 +5,7 @@ import random
 import time
 import logging
 import asyncio 
-import aiohttp # Thêm thư viện aiohttp
+import aiohttp 
 from datetime import datetime
 from urllib.parse import urlencode, quote
 
@@ -468,6 +468,8 @@ async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Bạn không được phép sử dụng lệnh này.")
         return
 
+    # Hàm này giờ sẽ được trigger bởi cả CommandHandler và MessageHandler
+    # nên cần kiểm tra xem có document không
     if not update.message.document:
         await update.message.reply_text("Vui lòng gửi kèm một file .txt chứa danh sách thẻ với lệnh `/mass`.")
         return
@@ -505,7 +507,18 @@ def main():
     # Thêm các handler cho lệnh
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cs", cs_command))
+
+    # --- SỬA LỖI MASS COMMAND ---
+    # 1. Xử lý khi người dùng gõ /mass (không có file)
     application.add_handler(CommandHandler("mass", mass_command))
+    
+    # 2. Xử lý khi người dùng gửi file .txt VỚI CAPTION là /mass
+    # Sử dụng Regex để đảm bảo caption chính xác là /mass
+    application.add_handler(MessageHandler(
+        filters.Document.TEXT & filters.CaptionRegex(r'^/mass$'), 
+        mass_command
+    ))
+    # --- KẾT THÚC SỬA LỖI ---
 
     # Bắt đầu chạy bot
     application.run_polling()
