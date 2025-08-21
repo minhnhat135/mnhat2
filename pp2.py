@@ -293,8 +293,8 @@ def check_card_logic(card):
                              f"billing_postcode={location['zip']}&billing_phone={num}&billing_email={acc}&payment_method=ppcp-gateway&terms=on&terms-field=1&"
                              f"woocommerce-process-checkout-nonce={check}&_wp_http_referer=%2F%3Fwc-ajax%3Dupdate_order_review")
         create_order_payload = {'nonce': create, 'payer': None, 'bn_code': 'Woo_PPCP', 'context': 'checkout', 'order_id': '0',
-                                'payment_method': 'ppcp-gateway', 'funding_source': 'card', 'form_encoded': form_encoded_data,
-                                'createaccount': False, 'save_payment_method': False}
+                                  'payment_method': 'ppcp-gateway', 'funding_source': 'card', 'form_encoded': form_encoded_data,
+                                  'createaccount': False, 'save_payment_method': False}
         create_order_headers = {"Content-Type": "application/json", "Accept": "*/*", "Origin": "https://switchupcb.com",
                                 "Referer": "https://switchupcb.com/checkout/"}
         
@@ -380,17 +380,28 @@ async def run_single_check(update: Update, context: ContextTypes.DEFAULT_TYPE, c
 
     await context.bot.send_message(chat_id=update.effective_chat.id, text=message, parse_mode='Markdown')
 
-# --- CÁC HÀM XỬ LÝ CHECK HÀNG LOẠT ĐỒNG THỜI ---
+# --- CÁC HÀM XỬ LÝ CHECK HÀNG LOẠT ĐỒNG THỜI (ĐÃ CẢI TIẾN) ---
+
+def create_progress_bar(progress, total, length=20):
+    """Tạo một thanh tiến trình dạng text."""
+    filled_length = int(length * progress // total)
+    bar = '█' * filled_length + '░' * (length - filled_length)
+    return bar
 
 async def run_concurrent_mass_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cards: list, status_message_id: int):
     """
-    Xử lý đồng thời nhiều thẻ và tổng hợp kết quả vào file.
+    Xử lý đồng thời nhiều thẻ, hiển thị tiến trình và tổng hợp kết quả vào file.
     """
     chat_id = update.effective_chat.id
     total_cards = len(cards)
     processed_count = 0
     start_time = time.time()
     results_list = []
+    
+    # Khởi tạo bộ đếm kết quả
+    charged_count = 0
+    approved_count = 0
+    declined_count = 0
     
     # Tạo các tác vụ để chạy đồng thời
     tasks = [asyncio.to_thread(check_card_logic, card.strip()) for card in cards if card.strip()]
@@ -401,23 +412,39 @@ async def run_concurrent_mass_check(update: Update, context: ContextTypes.DEFAUL
         try:
             result_dict = await future
             results_list.append(result_dict)
+            # Cập nhật bộ đếm
+            if result_dict.get('result') == 'charged':
+                charged_count += 1
+            elif result_dict.get('result') == 'approved':
+                approved_count += 1
+            else: # declined hoặc error
+                declined_count += 1
         except Exception as e:
             logger.error(f"Lỗi nghiêm trọng trong một tác vụ check thẻ: {e}")
-            # Ghi nhận lỗi để không làm mất thẻ
             results_list.append({'result': 'ERROR', 'message': str(e), 'card': 'UNKNOWN'})
+            declined_count += 1
 
         processed_count += 1
         
-        # Cập nhật trạng thái mỗi 2 giây để tránh spam API của Telegram
+        # Cập nhật trạng thái mỗi 2 giây hoặc khi hoàn tất để tránh spam API
         current_time = time.time()
         if current_time - last_update_time > 2 or processed_count == total_cards:
             elapsed_time = current_time - start_time
             eta = (elapsed_time / processed_count) * (total_cards - processed_count) if processed_count > 0 else 0
+            
+            # Tạo thanh tiến trình
+            progress_bar = create_progress_bar(processed_count, total_cards)
+            percentage = (processed_count / total_cards) * 100
+            
             status_text = (
-                f"⏳ **ĐANG XỬ LÝ...**\n\n"
-                f"- Đã xử lý: *{processed_count}/{total_cards}* thẻ\n"
-                f"- Thời gian đã qua: *{int(elapsed_time)} giây*\n"
-                f"- Dự kiến hoàn thành sau: *{int(eta)} giây*"
+                f"⏳ **ĐANG KIỂM TRA HÀNG LOẠT...**\n\n"
+                f"`{progress_bar}` *{percentage:.2f}%*\n\n"
+                f"✅ **Charged:** `{charged_count}`\n"
+                f"👍 **Approved:** `{approved_count}`\n"
+                f"❌ **Declined/Error:** `{declined_count}`\n\n"
+                f"💠 **Tổng:** `{processed_count}/{total_cards}`\n"
+                f"⏱️ **Thời gian đã qua:** `{int(elapsed_time)} giây`\n"
+                f"⌛️ **Dự kiến còn lại:** `{int(eta)} giây`"
             )
             try:
                 await context.bot.edit_message_text(
@@ -437,7 +464,7 @@ async def run_concurrent_mass_check(update: Update, context: ContextTypes.DEFAUL
     
     charged_cards = [res for res in results_list if res.get('result') == 'charged']
     approved_cards = [res for res in results_list if res.get('result') == 'approved']
-    declined_cards = [res for res in results_list if res.get('result') in ['declined', 'ERROR']]
+    declined_cards = [res for res in results_list if res.get('result') not in ['charged', 'approved']]
 
     if charged_cards:
         final_results_text += f"--- CHARGED ({len(charged_cards)}) ---\n"
@@ -450,7 +477,7 @@ async def run_concurrent_mass_check(update: Update, context: ContextTypes.DEFAUL
             final_results_text += format_result_message(res, is_for_file=True) + "\n\n"
 
     if declined_cards:
-        final_results_text += f"--- DECLINED ({len(declined_cards)}) ---\n"
+        final_results_text += f"--- DECLINED & ERROR ({len(declined_cards)}) ---\n"
         for res in declined_cards:
             final_results_text += format_result_message(res, is_for_file=True) + "\n\n"
 
@@ -471,7 +498,7 @@ async def run_concurrent_mass_check(update: Update, context: ContextTypes.DEFAUL
 def format_result_message(result_dict, current=None, total=None, is_for_file=False):
     """Định dạng thông báo kết quả để gửi cho người dùng."""
     result = result_dict.get('result', 'declined')
-    status_emoji = "✅" if result in ['charged', 'approved'] else "❌"
+    status_emoji = "✅" if result == 'charged' else ("👍" if result == 'approved' else "❌")
     
     header = ""
     if current and total and not is_for_file:
