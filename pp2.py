@@ -490,12 +490,19 @@ def format_result_message(result_dict, current=None, total=None, is_for_file=Fal
     
     bin_info_dict = result_dict.get('bin_info', {})
     if bin_info_dict and bin_info_dict.get('success'):
+        # --- FIX LỖI TẠI ĐÂY ---
+        # Lấy giá trị và đảm bảo nó không phải là None trước khi dùng .upper()
+        brand_str = str(bin_info_dict.get('brand') or 'N/A').upper()
+        type_str = str(bin_info_dict.get('type') or 'N/A').upper()
+        level_str = str(bin_info_dict.get('level') or 'N/A').upper()
+        # --- KẾT THÚC SỬA LỖI ---
+        
         bin_details = (
             f"ℹ️ Thông tin BIN:\n"
             f"  - Bank: `{bin_info_dict.get('bank', 'N/A')}`\n"
-            f"  - Brand: `{bin_info_dict.get('brand', 'N/A').upper()}`\n"
-            f"  - Type: `{bin_info_dict.get('type', 'N/A').upper()}`\n"
-            f"  - Level: `{bin_info_dict.get('level', 'N/A').upper()}`\n"
+            f"  - Brand: `{brand_str}`\n"
+            f"  - Type: `{type_str}`\n"
+            f"  - Level: `{level_str}`\n"
             f"  - Country: `{bin_info_dict.get('country', 'N/A')} ({bin_info_dict.get('country_code', 'N/A')})`\n"
         )
     else:
