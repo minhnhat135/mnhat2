@@ -4,7 +4,7 @@ import json
 import random
 import time
 import logging
-import threading
+import asyncio # Thêm thư viện asyncio
 from datetime import datetime
 from urllib.parse import urlencode, quote
 
@@ -342,21 +342,23 @@ def check_card_logic(card):
             'gateway': "Paypal $0.01", 'author': "mnhattz", 'bin_info': bin_info
         }
 
-# --- Các hàm chạy ngầm cho Bot ---
+# --- Các hàm chạy ngầm cho Bot (ĐÃ SỬA) ---
 
-def run_single_check(update: Update, context: ContextTypes.DEFAULT_TYPE, card: str):
-    """Hàm mục tiêu cho luồng xử lý một thẻ."""
+async def run_single_check(update: Update, context: ContextTypes.DEFAULT_TYPE, card: str):
+    """Hàm mục tiêu bất đồng bộ để xử lý một thẻ."""
     try:
-        result_dict = check_card_logic(card)
+        # Chạy hàm check_card_logic (vốn là hàm đồng bộ) trong một luồng riêng
+        # để không block vòng lặp sự kiện asyncio
+        result_dict = await asyncio.to_thread(check_card_logic, card)
         message = format_result_message(result_dict)
     except Exception as e:
         logger.error(f"Lỗi khi check thẻ {card}: {e}")
         message = f"❌ Đã xảy ra lỗi khi xử lý thẻ: `{card}`"
 
-    context.bot.send_message(chat_id=update.effective_chat.id, text=message, parse_mode='Markdown')
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=message, parse_mode='Markdown')
 
-def run_mass_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cards: list):
-    """Hàm mục tiêu cho luồng xử lý nhiều thẻ."""
+async def run_mass_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cards: list):
+    """Hàm mục tiêu bất đồng bộ để xử lý nhiều thẻ."""
     chat_id = update.effective_chat.id
     total = len(cards)
     
@@ -366,16 +368,16 @@ def run_mass_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cards: li
             continue
             
         try:
-            result_dict = check_card_logic(card)
+            result_dict = await asyncio.to_thread(check_card_logic, card)
             message = format_result_message(result_dict, current=i + 1, total=total)
-            context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
+            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
         except Exception as e:
             logger.error(f"Lỗi khi check hàng loạt thẻ {card}: {e}")
             message = f"❌ Lỗi xử lý thẻ `{card}`. Chuyển sang thẻ tiếp theo."
-            context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
-        time.sleep(1) # Thêm độ trễ nhỏ để tránh spam API Telegram
+            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
+        await asyncio.sleep(1) # Sử dụng asyncio.sleep thay cho time.sleep
 
-    context.bot.send_message(chat_id=chat_id, text="✅ Hoàn tất quá trình kiểm tra hàng loạt!")
+    await context.bot.send_message(chat_id=chat_id, text="✅ Hoàn tất quá trình kiểm tra hàng loạt!")
 
 # --- Các hàm xử lý lệnh của Bot ---
 
@@ -434,9 +436,8 @@ async def cs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     card = context.args[0]
     await update.message.reply_text(f"⏳ Đã nhận lệnh, đang kiểm tra thẻ `{card}`...", parse_mode='Markdown')
     
-    # Tạo và bắt đầu một luồng mới để không chặn bot
-    thread = threading.Thread(target=run_single_check, args=(update, context, card))
-    thread.start()
+    # Tạo một tác vụ asyncio thay vì luồng
+    asyncio.create_task(run_single_check(update, context, card))
 
 async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý lệnh /mass để check thẻ hàng loạt từ file."""
@@ -468,9 +469,8 @@ async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"✅ Đã nhận được {len(cards)} thẻ. Bắt đầu quá trình kiểm tra hàng loạt (kết quả sẽ được gửi riêng cho từng thẻ)...")
         
-        # Tạo và bắt đầu luồng mới để xử lý hàng loạt
-        thread = threading.Thread(target=run_mass_check, args=(update, context, cards))
-        thread.start()
+        # Tạo một tác vụ asyncio thay vì luồng
+        asyncio.create_task(run_mass_check(update, context, cards))
 
     except Exception as e:
         logger.error(f"Lỗi khi xử lý file: {e}")
@@ -485,7 +485,8 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cs", cs_command))
     application.add_handler(CommandHandler("mass", mass_command))
-    application.add_handler(MessageHandler(filters.COMMAND & filters.Document.TEXT, mass_command)) # Cho phép /mass kèm file
+    # Dòng dưới không cần thiết và có thể gây ra xử lý kép, bạn có thể xóa nếu muốn
+    # application.add_handler(MessageHandler(filters.COMMAND & filters.Document.TEXT, mass_command)) 
 
     # Bắt đầu chạy bot
     application.run_polling()
